@@ -213,6 +213,7 @@ button {
   border: 0;
   cursor: pointer;
   outline: none;
+  text-align: inherit;
 }
 
 input, select, textarea {
