@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="zh-Hans" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title><%= title %></title>
+  <meta name="description" content="典藏室 - 局域网文件共享工具，支持多选上传、拖拽上传、文件夹上传、在线预览图片/视频/音频/代码。">
+  <link rel="preload" href="/static/fonts/plex-mono.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/static/css/app.css?v=1.0.3">
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('fileshare.theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {
+        var t = (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+        document.documentElement.setAttribute('data-theme', t);
+      }
+    })();
+  </script>
+</head>
+<body data-auth="<%= authEnabled ? '1' : '0' %>">
+
+  <!-- Top bar -->
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="/">
+        <span class="brand-seal" aria-hidden="true">
+          <svg viewBox="0 0 40 40" width="36" height="36">
+            <circle cx="20" cy="20" r="17" fill="none" stroke="currentColor" stroke-width="1"/>
+            <circle cx="20" cy="20" r="14" fill="none" stroke="currentColor" stroke-width="0.5" stroke-dasharray="2 2"/>
+            <% 
+              var sealText1 = "典";
+              var sealText2 = "藏";
+              if (typeof appName !== 'undefined' && appName) {
+                var cleanName = appName.replace(/[\s\-_]/g, '');
+                if (cleanName.length > 0) {
+                  sealText1 = cleanName.charAt(0);
+                  sealText2 = cleanName.length > 1 ? cleanName.charAt(1) : "";
+                }
+              }
+            %>
+            <text x="20" y="<%= sealText2 ? 17 : 24 %>" text-anchor="middle" font-family="monospace" font-size="<%= sealText2 ? 8 : 12 %>" font-weight="700" fill="currentColor" letter-spacing="0.5"><%= sealText1 %></text>
+            <% if (sealText2) { %>
+              <text x="20" y="27" text-anchor="middle" font-family="monospace" font-size="8" font-weight="700" fill="currentColor" letter-spacing="0.5"><%= sealText2 %></text>
+            <% } %>
+          </svg>
+        </span>
+        <span class="brand-text">
+          <span class="brand-title"><%= typeof appName !== 'undefined' ? appName : '典藏室' %></span>
+          <span class="brand-sub">内网文件共享 · Intranet File Share</span>
+        </span>
+      </a>
+
+      <div class="address">
+        <span class="address-label">ADDR</span>
+        <code class="address-host">http://<%= host %>:<%= port %></code>
+      </div>
+
+      <div class="meta">
+        <button type="button" id="theme-toggle" class="theme-toggle-btn" aria-label="切换主题" title="切换深色/浅色模式">
+          <svg class="sun-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="5"></circle>
+            <line x1="12" y1="1" x2="12" y2="3"></line>
+            <line x1="12" y1="21" x2="12" y2="23"></line>
+            <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+            <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+            <line x1="1" y1="12" x2="3" y2="12"></line>
+            <line x1="21" y1="12" x2="23" y2="12"></line>
+            <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+            <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+          </svg>
+          <svg class="moon-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+          </svg>
+        </button>
+        <% if (authEnabled) { %>
+          <span class="auth-badge" title="已启用 HTTP Basic Auth">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" aria-hidden="true"><path d="M12 2a5 5 0 0 0-5 5v3H5v12h14V10h-2V7a5 5 0 0 0-5-5zm-3 8V7a3 3 0 0 1 6 0v3H9z"/></svg>
+            <span>AUTH</span>
+            <span class="auth-user"><%= authUser %></span>
+          </span>
+        <% } else { %>
+          <span class="auth-badge auth-open" title="未启用鉴权">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" aria-hidden="true"><path d="M12 2a5 5 0 0 0-5 5v3H5v12h14V10h-2V7a5 5 0 0 0-5-5zm-3 8V7a3 3 0 0 1 6 0v3H9z"/></svg>
+            <span>OPEN</span>
+          </span>
+        <% } %>
+      </div>
+    </div>
+  </header>
+
+  <main class="layout">
+
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <section class="panel panel-crumbs">
+        <p class="panel-label">Locus / 当前位置</p>
+        <nav class="crumbs" aria-label="breadcrumb">
+          <% currentDir.breadcrumb.forEach(function(c, i) { %>
+            <% if (i > 0) { %><span class="crumb-sep" aria-hidden="true">/</span><% } %>
+            <a class="crumb<%= i === currentDir.breadcrumb.length - 1 ? ' is-current' : '' %>" href="<%= href(c.relPath) %>" data-i="<%= i %>">
+              <span class="crumb-idx">§<%= String(i).padStart(2, '0') %></span>
+              <span class="crumb-name"><%= c.name %></span>
+            </a>
+          <% }); %>
+        </nav>
+        <% if (currentDir.parent !== null) { %>
+          <a class="back-link" href="<%= href(currentDir.parent) %>">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+            返回上一级
+          </a>
+        <% } %>
+      </section>
+
+      <section class="panel">
+        <p class="panel-label">Tally / 本目录统计</p>
+        <dl class="stats">
+          <div class="stat">
+            <dt>文件</dt>
+            <dd class="stat-num"><%= currentDir.fileCount %></dd>
+          </div>
+          <div class="stat">
+            <dt>文件夹</dt>
+            <dd class="stat-num"><%= currentDir.folderCount %></dd>
+          </div>
+          <div class="stat stat-wide">
+            <dt>总大小</dt>
+            <dd class="stat-num stat-num-sm"><%= currentDir.totalBytesText %></dd>
+          </div>
+        </dl>
+        <% if (currentDir.entries.length > 0) { %>
+          <a class="btn btn-ghost btn-block" href="/zip/<%= currentDir.relDir ? encodeURI(currentDir.relDir) : '' %>">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            Download ZIP
+          </a>
+        <% } %>
+      </section>
+
+      <section class="panel">
+        <p class="panel-label">Upload / 上传</p>
+        <form id="upload-form" method="POST" action="/upload<%= currentDir.relDir ? '/' + currentDir.relDir : '' %>" enctype="multipart/form-data">
+          <div class="dropzone" id="dropzone">
+            <input type="file" name="files" id="file-input-files" multiple style="display: none;">
+            <input type="file" name="files" id="file-input-folders" webkitdirectory directory style="display: none;">
+            <div class="dropzone-mark" aria-hidden="true">
+              <svg viewBox="0 0 48 48" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M24 32V12M16 20l8-8 8 8"/>
+                <path d="M8 32v6a2 2 0 0 0 2 2h28a2 2 0 0 0 2-2v-6"/>
+              </svg>
+            </div>
+            <span class="dropzone-title">拖拽文件或文件夹至此</span>
+            <span class="dropzone-sub">或点击下方按钮上传</span>
+            <div class="upload-buttons">
+              <button type="button" id="btn-select-files" class="btn btn-primary btn-sm">选取文件</button>
+              <button type="button" id="btn-select-folders" class="btn btn-ghost btn-sm">选取文件夹</button>
+            </div>
+          </div>
+          <div id="upload-progress" class="upload-progress" hidden>
+            <div class="upload-progress-bar"><div class="upload-progress-fill"></div></div>
+            <div class="upload-progress-text">就绪</div>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel panel-foot">
+        <p class="hint">共享根目录 · <code class="hint-path"><%= sharedDir %></code></p>
+      </section>
+    </aside>
+
+    <!-- Main content -->
+    <section class="content">
+      <header class="content-head">
+        <div class="content-title">
+          <p class="page-kicker">SHEET §<%= String(currentDir.breadcrumb.length).padStart(2, '0') %></p>
+          <h1 class="page-title">
+            <% if (currentDir.relDir) { %>
+              <%= currentDir.relDir.split('/').pop() %>
+            <% } else { %>
+              <span class="page-title-zh">根目录</span><span class="page-title-en">Home</span>
+            <% } %>
+          </h1>
+          <p class="page-sub">
+            <span class="page-sub-item"><%= currentDir.total %> 项</span>
+            <span class="page-sub-item"><%= currentDir.folderCount %> 文件夹</span>
+            <span class="page-sub-item"><%= currentDir.fileCount %> 文件</span>
+            <% if (currentDir.totalBytesText !== '-') { %>
+              <span class="page-sub-item"><%= currentDir.totalBytesText %></span>
+            <% } %>
+          </p>
+        </div>
+        <div class="content-tools">
+          <div class="search">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+            <input type="search" id="search" placeholder="搜索..." autocomplete="off" spellcheck="false">
+            <kbd class="search-kbd">/</kbd>
+          </div>
+          <div class="view-toggle" role="tablist" aria-label="视图切换">
+            <button type="button" data-view="grid" class="view-btn is-active" title="网格" aria-label="网格视图">
+              <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" aria-hidden="true"><path d="M3 3h7v7H3V3zm11 0h7v7h-7V3zM3 14h7v7H3v-7zm11 0h7v7h-7v-7z"/></svg>
+            </button>
+            <button type="button" data-view="list" class="view-btn" title="列表" aria-label="列表视图">
+              <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" aria-hidden="true"><path d="M3 4h18v3H3V4zm0 7h18v3H3v-3zm0 7h18v3H3v-3z"/></svg>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <% if (currentDir.entries.length === 0) { %>
+        <div class="empty">
+          <svg class="empty-mark" viewBox="0 0 96 96" width="64" height="64" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M16 32v44a4 4 0 0 0 4 4h56a4 4 0 0 0 4-4V40a4 4 0 0 0-4-4H46l-6-8H20a4 4 0 0 0-4 4z" fill="currentColor" fill-opacity="0.04"/>
+            <path d="M16 32v44a4 4 0 0 0 4 4h56a4 4 0 0 0 4-4V40a4 4 0 0 0-4-4H46l-6-8H20a4 4 0 0 0-4 4z"/>
+            <line x1="28" y1="56" x2="68" y2="56"/>
+            <line x1="28" y1="64" x2="58" y2="64"/>
+            <line x1="28" y1="72" x2="50" y2="72"/>
+          </svg>
+          <h2 class="empty-title">本目录暂无内容</h2>
+          <p class="empty-text">用左侧上传区把文件加进来，或者从其他目录搬一些过来。<br>任何文件格式都可以 -- 图片、文档、压缩包、代码、视频、音频。</p>
+        </div>
+      <% } else { %>
+
+        <div id="entries" class="entries view-grid" data-view="grid">
+          <% currentDir.entries.forEach(function(e, idx) { %>
+            <% var num = String(idx + 1).padStart(3, '0'); %>
+            <% if (e.type === 'folder') { %>
+              <a class="entry entry-folder" href="<%= href(e.relPath) %>" data-name="<%= e.name.toLowerCase() %>" data-idx="<%= idx %>">
+                <div class="entry-rail" aria-hidden="true"></div>
+                <div class="entry-num" aria-hidden="true">F<%= num %></div>
+                <div class="entry-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" fill="currentColor" fill-opacity="0.1"/>
+                  </svg>
+                </div>
+                <div class="entry-body">
+                  <h3 class="entry-name"><%= e.name %></h3>
+                  <p class="entry-meta">
+                    <span class="entry-meta-item"><%= e.sizeText %></span>
+                    <span class="dot">|</span>
+                    <span class="entry-meta-item"><%= e.mtimeText %></span>
+                  </p>
+                </div>
+                <span class="entry-go" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+                </span>
+              </a>
+            <% } else { %>
+              <div class="entry entry-file" data-name="<%= e.name.toLowerCase() %>" data-kind="<%= e.kind %>" data-rel="<%= e.relPath %>" data-size="<%= e.sizeBytes %>" data-idx="<%= idx %>">
+                <div class="entry-rail" aria-hidden="true"></div>
+                <div class="entry-num" aria-hidden="true">N<%= num %></div>
+                <button type="button" class="entry-row" data-action="preview" aria-label="预览 <%= e.name %>">
+                  <div class="entry-icon entry-icon-<%= e.kind %>" aria-hidden="true">
+                    <% if (e.kind === 'image') { %>
+                      <svg viewBox="0 0 64 64" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M10 14a2 2 0 0 1 2-2h40a2 2 0 0 1 2 2v36a2 2 0 0 1-2 2H12a2 2 0 0 1-2-2V14z" fill="currentColor" fill-opacity="0.04"/>
+                        <path d="M10 14a2 2 0 0 1 2-2h40a2 2 0 0 1 2 2v36a2 2 0 0 1-2 2H12a2 2 0 0 1-2-2V14z"/>
+                        <circle cx="22" cy="24" r="3"/>
+                        <path d="M14 46l12-12 8 8 4-4 12 12"/>
+                      </svg>
+                    <% } else if (e.kind === 'code') { %>
+                      <svg viewBox="0 0 64 64" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M14 14a2 2 0 0 1 2-2h32a2 2 0 0 1 2 2v36a2 2 0 0 1-2 2H16a2 2 0 0 1-2-2V14z" fill="currentColor" fill-opacity="0.04"/>
+                        <path d="M14 14a2 2 0 0 1 2-2h32a2 2 0 0 1 2 2v36a2 2 0 0 1-2 2H16a2 2 0 0 1-2-2V14z"/>
+                        <path d="M24 26l-6 6 6 6M40 26l6 6-6 6M34 22l-4 20"/>
+                      </svg>
+                    <% } else if (e.kind === 'text') { %>
+                      <svg viewBox="0 0 64 64" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M14 14a2 2 0 0 1 2-2h32a2 2 0 0 1 2 2v36a2 2 0 0 1-2 2H16a2 2 0 0 1-2-2V14z" fill="currentColor" fill-opacity="0.04"/>
+                        <path d="M14 14a2 2 0 0 1 2-2h32a2 2 0 0 1 2 2v36a2 2 0 0 1-2 2H16a2 2 0 0 1-2-2V14z"/>
+                        <line x1="20" y1="22" x2="44" y2="22"/>
+                        <line x1="20" y1="30" x2="44" y2="30"/>
+                        <line x1="20" y1="38" x2="40" y2="38"/>
+                        <line x1="20" y1="46" x2="34" y2="46"/>
+                      </svg>
+                    <% } else if (e.kind === 'archive') { %>
+                      <svg viewBox="0 0 64 64" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M14 14a2 2 0 0 1 2-2h32a2 2 0 0 1 2 2v36a2 2 0 0 1-2 2H16a2 2 0 0 1-2-2V14z" fill="currentColor" fill-opacity="0.04"/>
+                        <path d="M14 14a2 2 0 0 1 2-2h32a2 2 0 0 1 2 2v36a2 2 0 0 1-2 2H16a2 2 0 0 1-2-2V14z"/>
+                        <rect x="22" y="18" width="6" height="6" rx="1"/>
+                        <rect x="36" y="18" width="6" height="6" rx="1"/>
+                        <path d="M28 30h8M28 38h8M28 46h8"/>
+                      </svg>
+                    <% } else if (e.kind === 'audio') { %>
+                      <svg viewBox="0 0 64 64" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M14 14a2 2 0 0 1 2-2h32a2 2 0 0 1 2 2v36a2 2 0 0 1-2 2H16a2 2 0 0 1-2-2V14z" fill="currentColor" fill-opacity="0.04"/>
+                        <path d="M14 14a2 2 0 0 1 2-2h32a2 2 0 0 1 2 2v36a2 2 0 0 1-2 2H16a2 2 0 0 1-2-2V14z"/>
+                        <path d="M22 34v-5a10 10 0 0 1 20 0v5" fill="none" stroke="currentColor" stroke-width="1.8" />
+                        <rect x="18" y="32" width="6" height="10" rx="2" fill="currentColor" stroke="none"/>
+                        <rect x="40" y="32" width="6" height="10" rx="2" fill="currentColor" stroke="none"/>
+                      </svg>
+                    <% } else if (e.kind === 'video') { %>
+                      <svg viewBox="0 0 64 64" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M14 14a2 2 0 0 1 2-2h32a2 2 0 0 1 2 2v36a2 2 0 0 1-2 2H16a2 2 0 0 1-2-2V14z" fill="currentColor" fill-opacity="0.04"/>
+                        <path d="M14 14a2 2 0 0 1 2-2h32a2 2 0 0 1 2 2v36a2 2 0 0 1-2 2H16a2 2 0 0 1-2-2V14z"/>
+                        <polygon points="28,24 42,32 28,40" fill="currentColor"/>
+                      </svg>
+                    <% } else if (e.kind === 'pdf') { %>
+                      <svg viewBox="0 0 64 64" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M14 14a2 2 0 0 1 2-2h32a2 2 0 0 1 2 2v36a2 2 0 0 1-2 2H16a2 2 0 0 1-2-2V14z" fill="currentColor" fill-opacity="0.04"/>
+                        <path d="M14 14a2 2 0 0 1 2-2h32a2 2 0 0 1 2 2v36a2 2 0 0 1-2 2H16a2 2 0 0 1-2-2V14z"/>
+                        <text x="32" y="38" text-anchor="middle" font-family="monospace" font-size="10" font-weight="700" fill="currentColor" stroke="none">PDF</text>
+                      </svg>
+                    <% } else { %>
+                      <svg viewBox="0 0 64 64" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M14 14a2 2 0 0 1 2-2h32a2 2 0 0 1 2 2v36a2 2 0 0 1-2 2H16a2 2 0 0 1-2-2V14z" fill="currentColor" fill-opacity="0.04"/>
+                        <path d="M14 14a2 2 0 0 1 2-2h32a2 2 0 0 1 2 2v36a2 2 0 0 1-2 2H16a2 2 0 0 1-2-2V14z"/>
+                        <line x1="22" y1="22" x2="42" y2="42"/>
+                      </svg>
+                    <% } %>
+                  </div>
+                  <div class="entry-body">
+                    <h3 class="entry-name"><%= e.name %></h3>
+                    <p class="entry-meta">
+                      <span class="entry-kind"><%= e.kind %></span>
+                      <span class="dot">|</span>
+                      <span class="entry-meta-item"><%= e.sizeText %></span>
+                      <span class="dot">|</span>
+                      <span class="entry-meta-item"><%= e.mtimeText %></span>
+                    </p>
+                  </div>
+                </button>
+                <a class="entry-action" href="/raw/<%= encodeURI(e.relPath) %>" download aria-label="下载 <%= e.name %>" title="下载">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="7 10 12 15 17 10"/>
+                    <line x1="12" y1="15" x2="12" y2="3"/>
+                  </svg>
+                </a>
+              </div>
+            <% } %>
+          <% }); %>
+        </div>
+
+      <% } %>
+    </section>
+  </main>
+
+  <!-- Preview drawer -->
+  <div id="drawer" class="drawer" hidden>
+    <div class="drawer-shade" data-action="close"></div>
+    <aside class="drawer-panel" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
+      <header class="drawer-head">
+        <div class="drawer-head-text">
+          <p class="drawer-eyebrow"><span class="drawer-eyebrow-num" id="drawer-eyebrow-num">--</span> / Preview / 预览</p>
+          <h2 id="drawer-title" class="drawer-title">--</h2>
+          <p class="drawer-meta">--</p>
+        </div>
+        <div class="drawer-actions">
+          <a id="drawer-download" class="btn btn-primary" href="#" download>
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            下载
+          </a>
+          <button type="button" class="btn btn-icon" data-action="close" aria-label="关闭">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" aria-hidden="true"><path d="M19 6.4L17.6 5 12 10.6 6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4z"/></svg>
+          </button>
+        </div>
+      </header>
+      <div id="drawer-body" class="drawer-body">
+        <div class="drawer-loading">
+          <span class="drawer-spinner" aria-hidden="true"></span>
+          <span>正在打开...</span>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- Drag and drop overlay -->
+  <div id="drag-overlay" class="drag-overlay" hidden>
+    <div class="drag-overlay-box">
+      <svg class="drag-overlay-icon" viewBox="0 0 24 24" width="64" height="64" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+        <polyline points="17 8 12 3 7 8"></polyline>
+        <line x1="12" y1="3" x2="12" y2="15"></line>
+      </svg>
+      <h2>释放文件以上传到当前目录</h2>
+      <p>支持多选拖拽文件或整个文件夹</p>
+    </div>
+  </div>
+
+  <script src="/static/js/app.js?v=1.0.2"></script>
+</body>
+</html>

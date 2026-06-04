@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title><%= title %></title>
+  <link rel="stylesheet" href="/static/css/app.css?v=1.0.3">
+</head>
+<body>
+  <div class="err-wrap">
+    <div class="err-card">
+      <div class="err-eyebrow">Error</div>
+      <h1 class="err-title"><%= message %></h1>
+      <p class="err-detail"><code><%= detail %></code></p>
+      <a class="err-back" href="<%= backHref %>">← 返回根目录</a>
+    </div>
+  </div>
+</body>
+</html>
