@@ -6,7 +6,7 @@
   <title><%= title %></title>
   <meta name="description" content="典藏室 - 局域网文件共享工具，支持多选上传、拖拽上传、文件夹上传、在线预览图片/视频/音频/代码。">
   <link rel="preload" href="/static/fonts/plex-mono.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="/static/css/app.css?v=1.0.3">
+  <link rel="stylesheet" href="/static/css/app.css?v=1.0.4">
   <script>
     (function () {
       try {
@@ -25,35 +25,24 @@
   <header class="topbar">
     <div class="topbar-inner">
       <a class="brand" href="/">
-        <span class="brand-seal" aria-hidden="true">
-          <svg viewBox="0 0 40 40" width="36" height="36">
-            <circle cx="20" cy="20" r="17" fill="none" stroke="currentColor" stroke-width="1"/>
-            <circle cx="20" cy="20" r="14" fill="none" stroke="currentColor" stroke-width="0.5" stroke-dasharray="2 2"/>
-            <% 
-              var sealText1 = "典";
-              var sealText2 = "藏";
-              if (typeof appName !== 'undefined' && appName) {
-                var cleanName = appName.replace(/[\s\-_]/g, '');
-                if (cleanName.length > 0) {
-                  sealText1 = cleanName.charAt(0);
-                  sealText2 = cleanName.length > 1 ? cleanName.charAt(1) : "";
-                }
-              }
-            %>
-            <text x="20" y="<%= sealText2 ? 17 : 24 %>" text-anchor="middle" font-family="monospace" font-size="<%= sealText2 ? 8 : 12 %>" font-weight="700" fill="currentColor" letter-spacing="0.5"><%= sealText1 %></text>
-            <% if (sealText2) { %>
-              <text x="20" y="27" text-anchor="middle" font-family="monospace" font-size="8" font-weight="700" fill="currentColor" letter-spacing="0.5"><%= sealText2 %></text>
-            <% } %>
+        <span class="brand-logo" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" fill="currentColor" fill-opacity="0.15"/>
+            <circle cx="12" cy="13" r="1.5" fill="currentColor"/>
+            <circle cx="16" cy="10" r="1.5" fill="currentColor"/>
+            <circle cx="16" cy="16" r="1.5" fill="currentColor"/>
+            <line x1="13.2" y1="12.4" x2="14.8" y2="10.6"/>
+            <line x1="13.2" y1="13.6" x2="14.8" y2="15.4"/>
           </svg>
         </span>
         <span class="brand-text">
           <span class="brand-title"><%= typeof appName !== 'undefined' ? appName : '典藏室' %></span>
-          <span class="brand-sub">内网文件共享 · Intranet File Share</span>
+          <span class="brand-sub">内网文件共享 · Intranet Share</span>
         </span>
       </a>
 
       <div class="address">
-        <span class="address-label">ADDR</span>
+        <span class="address-label">访问地址</span>
         <code class="address-host">http://<%= host %>:<%= port %></code>
       </div>
 
@@ -83,7 +72,7 @@
         <% } else { %>
           <span class="auth-badge auth-open" title="未启用鉴权">
             <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" aria-hidden="true"><path d="M12 2a5 5 0 0 0-5 5v3H5v12h14V10h-2V7a5 5 0 0 0-5-5zm-3 8V7a3 3 0 0 1 6 0v3H9z"/></svg>
-            <span>OPEN</span>
+            <span>公开共享</span>
           </span>
         <% } %>
       </div>
@@ -94,70 +83,28 @@
 
     <!-- Sidebar -->
     <aside class="sidebar">
-      <section class="panel panel-crumbs">
-        <p class="panel-label">Locus / 当前位置</p>
-        <nav class="crumbs" aria-label="breadcrumb">
-          <% currentDir.breadcrumb.forEach(function(c, i) { %>
-            <% if (i > 0) { %><span class="crumb-sep" aria-hidden="true">/</span><% } %>
-            <a class="crumb<%= i === currentDir.breadcrumb.length - 1 ? ' is-current' : '' %>" href="<%= href(c.relPath) %>" data-i="<%= i %>">
-              <span class="crumb-idx">§<%= String(i).padStart(2, '0') %></span>
-              <span class="crumb-name"><%= c.name %></span>
-            </a>
-          <% }); %>
-        </nav>
-        <% if (currentDir.parent !== null) { %>
-          <a class="back-link" href="<%= href(currentDir.parent) %>">
-            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
-            返回上一级
-          </a>
-        <% } %>
-      </section>
-
-      <section class="panel">
-        <p class="panel-label">Tally / 本目录统计</p>
-        <dl class="stats">
-          <div class="stat">
-            <dt>文件</dt>
-            <dd class="stat-num"><%= currentDir.fileCount %></dd>
-          </div>
-          <div class="stat">
-            <dt>文件夹</dt>
-            <dd class="stat-num"><%= currentDir.folderCount %></dd>
-          </div>
-          <div class="stat stat-wide">
-            <dt>总大小</dt>
-            <dd class="stat-num stat-num-sm"><%= currentDir.totalBytesText %></dd>
-          </div>
-        </dl>
-        <% if (currentDir.entries.length > 0) { %>
-          <a class="btn btn-ghost btn-block" href="/zip/<%= currentDir.relDir ? encodeURI(currentDir.relDir) : '' %>">
-            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="7 10 12 15 17 10"/>
-              <line x1="12" y1="15" x2="12" y2="3"/>
-            </svg>
-            Download ZIP
-          </a>
-        <% } %>
-      </section>
-
-      <section class="panel">
+      <section class="panel panel-upload">
         <p class="panel-label">Upload / 上传</p>
         <form id="upload-form" method="POST" action="/upload<%= currentDir.relDir ? '/' + currentDir.relDir : '' %>" enctype="multipart/form-data">
           <div class="dropzone" id="dropzone">
             <input type="file" name="files" id="file-input-files" multiple style="display: none;">
             <input type="file" name="files" id="file-input-folders" webkitdirectory directory style="display: none;">
-            <div class="dropzone-mark" aria-hidden="true">
-              <svg viewBox="0 0 48 48" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M24 32V12M16 20l8-8 8 8"/>
-                <path d="M8 32v6a2 2 0 0 0 2 2h28a2 2 0 0 0 2-2v-6"/>
+            
+            <div class="dropzone-compact">
+              <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="dropzone-icon">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
               </svg>
+              <div class="dropzone-text-group">
+                <span class="dropzone-title">拖拽文件或文件夹至此</span>
+                <span class="dropzone-sub">或使用下方按钮选择</span>
+              </div>
             </div>
-            <span class="dropzone-title">拖拽文件或文件夹至此</span>
-            <span class="dropzone-sub">或点击下方按钮上传</span>
+
             <div class="upload-buttons">
-              <button type="button" id="btn-select-files" class="btn btn-primary btn-sm">选取文件</button>
-              <button type="button" id="btn-select-folders" class="btn btn-ghost btn-sm">选取文件夹</button>
+              <button type="button" id="btn-select-files" class="btn btn-primary btn-block">选取文件</button>
+              <button type="button" id="btn-select-folders" class="btn btn-ghost btn-block">选取文件夹</button>
             </div>
           </div>
           <div id="upload-progress" class="upload-progress" hidden>
@@ -167,21 +114,63 @@
         </form>
       </section>
 
+      <section class="panel">
+        <p class="panel-label">Tally / 目录统计</p>
+        <dl class="stats">
+          <div class="stat">
+            <dt>文件数量</dt>
+            <dd class="stat-num"><%= currentDir.fileCount %></dd>
+          </div>
+          <div class="stat">
+            <dt>文件夹数量</dt>
+            <dd class="stat-num"><%= currentDir.folderCount %></dd>
+          </div>
+          <div class="stat stat-wide">
+            <dt>总大小</dt>
+            <dd class="stat-num stat-num-sm"><%= currentDir.totalBytesText %></dd>
+          </div>
+        </dl>
+        <% if (currentDir.entries.length > 0) { %>
+          <a class="btn btn-ghost btn-block" href="/zip/<%= currentDir.relDir ? encodeURI(currentDir.relDir) : '' %>">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            打包下载当前目录
+          </a>
+        <% } %>
+      </section>
+
       <section class="panel panel-foot">
-        <p class="hint">共享根目录 · <code class="hint-path"><%= sharedDir %></code></p>
+        <p class="hint">共享路径 · <code class="hint-path"><%= sharedDir %></code></p>
       </section>
     </aside>
 
     <!-- Main content -->
     <section class="content">
+      
+      <!-- Horizontal Breadcrumbs -->
+      <nav class="breadcrumbs-horizontal" aria-label="breadcrumb">
+        <% currentDir.breadcrumb.forEach(function(c, i) { %>
+          <% if (i > 0) { %>
+            <span class="crumb-sep" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+            </span>
+          <% } %>
+          <a class="crumb-item<%= i === currentDir.breadcrumb.length - 1 ? ' is-current' : '' %>" href="<%= href(c.relPath) %>">
+            <%= c.name %>
+          </a>
+        <% }); %>
+      </nav>
+
       <header class="content-head">
         <div class="content-title">
-          <p class="page-kicker">SHEET §<%= String(currentDir.breadcrumb.length).padStart(2, '0') %></p>
           <h1 class="page-title">
             <% if (currentDir.relDir) { %>
               <%= currentDir.relDir.split('/').pop() %>
             <% } else { %>
-              <span class="page-title-zh">根目录</span><span class="page-title-en">Home</span>
+              所有文件
             <% } %>
           </h1>
           <p class="page-sub">
@@ -220,20 +209,17 @@
             <line x1="28" y1="72" x2="50" y2="72"/>
           </svg>
           <h2 class="empty-title">本目录暂无内容</h2>
-          <p class="empty-text">用左侧上传区把文件加进来，或者从其他目录搬一些过来。<br>任何文件格式都可以 -- 图片、文档、压缩包、代码、视频、音频。</p>
+          <p class="empty-text">用左侧上传区把文件加进来，或者直接拖拽文件或文件夹到网页中。</p>
         </div>
       <% } else { %>
 
         <div id="entries" class="entries view-grid" data-view="grid">
           <% currentDir.entries.forEach(function(e, idx) { %>
-            <% var num = String(idx + 1).padStart(3, '0'); %>
             <% if (e.type === 'folder') { %>
               <a class="entry entry-folder" href="<%= href(e.relPath) %>" data-name="<%= e.name.toLowerCase() %>" data-idx="<%= idx %>">
-                <div class="entry-rail" aria-hidden="true"></div>
-                <div class="entry-num" aria-hidden="true">F<%= num %></div>
                 <div class="entry-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" fill="currentColor" fill-opacity="0.1"/>
+                  <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" fill="currentColor" fill-opacity="0.15"/>
                   </svg>
                 </div>
                 <div class="entry-body">
@@ -250,65 +236,52 @@
               </a>
             <% } else { %>
               <div class="entry entry-file" data-name="<%= e.name.toLowerCase() %>" data-kind="<%= e.kind %>" data-rel="<%= e.relPath %>" data-size="<%= e.sizeBytes %>" data-idx="<%= idx %>">
-                <div class="entry-rail" aria-hidden="true"></div>
-                <div class="entry-num" aria-hidden="true">N<%= num %></div>
                 <button type="button" class="entry-row" data-action="preview" aria-label="预览 <%= e.name %>">
                   <div class="entry-icon entry-icon-<%= e.kind %>" aria-hidden="true">
                     <% if (e.kind === 'image') { %>
-                      <svg viewBox="0 0 64 64" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M10 14a2 2 0 0 1 2-2h40a2 2 0 0 1 2 2v36a2 2 0 0 1-2 2H12a2 2 0 0 1-2-2V14z" fill="currentColor" fill-opacity="0.04"/>
-                        <path d="M10 14a2 2 0 0 1 2-2h40a2 2 0 0 1 2 2v36a2 2 0 0 1-2 2H12a2 2 0 0 1-2-2V14z"/>
-                        <circle cx="22" cy="24" r="3"/>
-                        <path d="M14 46l12-12 8 8 4-4 12 12"/>
+                      <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                        <circle cx="8.5" cy="8.5" r="1.5"/>
+                        <polyline points="21 15 16 10 5 21"/>
                       </svg>
                     <% } else if (e.kind === 'code') { %>
-                      <svg viewBox="0 0 64 64" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M14 14a2 2 0 0 1 2-2h32a2 2 0 0 1 2 2v36a2 2 0 0 1-2 2H16a2 2 0 0 1-2-2V14z" fill="currentColor" fill-opacity="0.04"/>
-                        <path d="M14 14a2 2 0 0 1 2-2h32a2 2 0 0 1 2 2v36a2 2 0 0 1-2 2H16a2 2 0 0 1-2-2V14z"/>
-                        <path d="M24 26l-6 6 6 6M40 26l6 6-6 6M34 22l-4 20"/>
+                      <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="16 18 22 12 16 6"/>
+                        <polyline points="8 6 2 12 8 18"/>
+                        <line x1="14" y1="4" x2="10" y2="20"/>
                       </svg>
                     <% } else if (e.kind === 'text') { %>
-                      <svg viewBox="0 0 64 64" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M14 14a2 2 0 0 1 2-2h32a2 2 0 0 1 2 2v36a2 2 0 0 1-2 2H16a2 2 0 0 1-2-2V14z" fill="currentColor" fill-opacity="0.04"/>
-                        <path d="M14 14a2 2 0 0 1 2-2h32a2 2 0 0 1 2 2v36a2 2 0 0 1-2 2H16a2 2 0 0 1-2-2V14z"/>
-                        <line x1="20" y1="22" x2="44" y2="22"/>
-                        <line x1="20" y1="30" x2="44" y2="30"/>
-                        <line x1="20" y1="38" x2="40" y2="38"/>
-                        <line x1="20" y1="46" x2="34" y2="46"/>
+                      <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                        <polyline points="14 2 14 8 20 8"/>
+                        <line x1="16" y1="13" x2="8" y2="13"/>
+                        <line x1="16" y1="17" x2="8" y2="17"/>
+                        <polyline points="10 9 9 9 8 9"/>
                       </svg>
                     <% } else if (e.kind === 'archive') { %>
-                      <svg viewBox="0 0 64 64" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M14 14a2 2 0 0 1 2-2h32a2 2 0 0 1 2 2v36a2 2 0 0 1-2 2H16a2 2 0 0 1-2-2V14z" fill="currentColor" fill-opacity="0.04"/>
-                        <path d="M14 14a2 2 0 0 1 2-2h32a2 2 0 0 1 2 2v36a2 2 0 0 1-2 2H16a2 2 0 0 1-2-2V14z"/>
-                        <rect x="22" y="18" width="6" height="6" rx="1"/>
-                        <rect x="36" y="18" width="6" height="6" rx="1"/>
-                        <path d="M28 30h8M28 38h8M28 46h8"/>
+                      <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
                       </svg>
                     <% } else if (e.kind === 'audio') { %>
-                      <svg viewBox="0 0 64 64" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M14 14a2 2 0 0 1 2-2h32a2 2 0 0 1 2 2v36a2 2 0 0 1-2 2H16a2 2 0 0 1-2-2V14z" fill="currentColor" fill-opacity="0.04"/>
-                        <path d="M14 14a2 2 0 0 1 2-2h32a2 2 0 0 1 2 2v36a2 2 0 0 1-2 2H16a2 2 0 0 1-2-2V14z"/>
-                        <path d="M22 34v-5a10 10 0 0 1 20 0v5" fill="none" stroke="currentColor" stroke-width="1.8" />
-                        <rect x="18" y="32" width="6" height="10" rx="2" fill="currentColor" stroke="none"/>
-                        <rect x="40" y="32" width="6" height="10" rx="2" fill="currentColor" stroke="none"/>
+                      <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M3 18v-6a9 9 0 0 1 18 0v6"/>
+                        <path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/>
                       </svg>
                     <% } else if (e.kind === 'video') { %>
-                      <svg viewBox="0 0 64 64" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M14 14a2 2 0 0 1 2-2h32a2 2 0 0 1 2 2v36a2 2 0 0 1-2 2H16a2 2 0 0 1-2-2V14z" fill="currentColor" fill-opacity="0.04"/>
-                        <path d="M14 14a2 2 0 0 1 2-2h32a2 2 0 0 1 2 2v36a2 2 0 0 1-2 2H16a2 2 0 0 1-2-2V14z"/>
-                        <polygon points="28,24 42,32 28,40" fill="currentColor"/>
+                      <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                        <polygon points="23 7 16 12 23 17 23 7"/>
+                        <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
                       </svg>
                     <% } else if (e.kind === 'pdf') { %>
-                      <svg viewBox="0 0 64 64" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M14 14a2 2 0 0 1 2-2h32a2 2 0 0 1 2 2v36a2 2 0 0 1-2 2H16a2 2 0 0 1-2-2V14z" fill="currentColor" fill-opacity="0.04"/>
-                        <path d="M14 14a2 2 0 0 1 2-2h32a2 2 0 0 1 2 2v36a2 2 0 0 1-2 2H16a2 2 0 0 1-2-2V14z"/>
-                        <text x="32" y="38" text-anchor="middle" font-family="monospace" font-size="10" font-weight="700" fill="currentColor" stroke="none">PDF</text>
+                      <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                        <polyline points="14 2 14 8 20 8"/>
+                        <text x="7" y="17" font-size="6.5" font-family="system-ui" font-weight="800" fill="currentColor">PDF</text>
                       </svg>
                     <% } else { %>
-                      <svg viewBox="0 0 64 64" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M14 14a2 2 0 0 1 2-2h32a2 2 0 0 1 2 2v36a2 2 0 0 1-2 2H16a2 2 0 0 1-2-2V14z" fill="currentColor" fill-opacity="0.04"/>
-                        <path d="M14 14a2 2 0 0 1 2-2h32a2 2 0 0 1 2 2v36a2 2 0 0 1-2 2H16a2 2 0 0 1-2-2V14z"/>
-                        <line x1="22" y1="22" x2="42" y2="42"/>
+                      <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                        <polyline points="14 2 14 8 20 8"/>
                       </svg>
                     <% } %>
                   </div>
@@ -345,7 +318,7 @@
     <aside class="drawer-panel" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
       <header class="drawer-head">
         <div class="drawer-head-text">
-          <p class="drawer-eyebrow"><span class="drawer-eyebrow-num" id="drawer-eyebrow-num">--</span> / Preview / 预览</p>
+          <p class="drawer-eyebrow">Preview / 预览</p>
           <h2 id="drawer-title" class="drawer-title">--</h2>
           <p class="drawer-meta">--</p>
         </div>
@@ -385,6 +358,6 @@
     </div>
   </div>
 
-  <script src="/static/js/app.js?v=1.0.2"></script>
+  <script src="/static/js/app.js?v=1.0.4"></script>
 </body>
 </html>
