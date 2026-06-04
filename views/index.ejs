@@ -6,7 +6,7 @@
   <title><%= title %></title>
   <meta name="description" content="典藏室 - 局域网文件共享工具，支持多选上传、拖拽上传、文件夹上传、在线预览图片/视频/音频/代码。">
   <link rel="preload" href="/static/fonts/plex-mono.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="/static/css/app.css?v=1.0.4">
+  <link rel="stylesheet" href="/static/css/app.css?v=1.0.5">
   <script>
     (function () {
       try {
@@ -21,13 +21,63 @@
 </head>
 <body data-auth="<%= authEnabled ? '1' : '0' %>">
 
+  <!-- Ambient Glow Blur Spheres -->
+  <div class="ambient-glow-wrapper" aria-hidden="true">
+    <div class="glow-sphere glow-1"></div>
+    <div class="glow-sphere glow-2"></div>
+    <div class="glow-sphere glow-3"></div>
+  </div>
+
+  <!-- SVG Gradients Definitions -->
+  <svg style="display: none;" aria-hidden="true">
+    <defs>
+      <linearGradient id="grad-logo" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#6366f1" />
+        <stop offset="50%" stop-color="#8b5cf6" />
+        <stop offset="100%" stop-color="#ec4899" />
+      </linearGradient>
+      <linearGradient id="grad-folder" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#ffb03a" />
+        <stop offset="100%" stop-color="#f59e0b" />
+      </linearGradient>
+      <linearGradient id="grad-image" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#34d399" />
+        <stop offset="100%" stop-color="#059669" />
+      </linearGradient>
+      <linearGradient id="grad-code" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#a78bfa" />
+        <stop offset="100%" stop-color="#f43f5e" />
+      </linearGradient>
+      <linearGradient id="grad-text" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#9ca3af" />
+        <stop offset="100%" stop-color="#4b5563" />
+      </linearGradient>
+      <linearGradient id="grad-archive" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#fb923c" />
+        <stop offset="100%" stop-color="#ea580c" />
+      </linearGradient>
+      <linearGradient id="grad-media" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#f43f5e" />
+        <stop offset="100%" stop-color="#b91c1c" />
+      </linearGradient>
+      <linearGradient id="grad-pdf" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#f87171" />
+        <stop offset="100%" stop-color="#dc2626" />
+      </linearGradient>
+      <linearGradient id="grad-file" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#22d3ee" />
+        <stop offset="100%" stop-color="#0891b2" />
+      </linearGradient>
+    </defs>
+  </svg>
+
   <!-- Top bar -->
   <header class="topbar">
     <div class="topbar-inner">
       <a class="brand" href="/">
         <span class="brand-logo" aria-hidden="true">
           <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" fill="currentColor" fill-opacity="0.15"/>
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" fill="url(#grad-logo)" fill-opacity="0.3"/>
             <circle cx="12" cy="13" r="1.5" fill="currentColor"/>
             <circle cx="16" cy="10" r="1.5" fill="currentColor"/>
             <circle cx="16" cy="16" r="1.5" fill="currentColor"/>
@@ -218,8 +268,8 @@
             <% if (e.type === 'folder') { %>
               <a class="entry entry-folder" href="<%= href(e.relPath) %>" data-name="<%= e.name.toLowerCase() %>" data-idx="<%= idx %>">
                 <div class="entry-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" fill="currentColor" fill-opacity="0.15"/>
+                  <svg viewBox="0 0 24 24" width="24" height="24" fill="url(#grad-folder)" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
                   </svg>
                 </div>
                 <div class="entry-body">
@@ -239,47 +289,45 @@
                 <button type="button" class="entry-row" data-action="preview" aria-label="预览 <%= e.name %>">
                   <div class="entry-icon entry-icon-<%= e.kind %>" aria-hidden="true">
                     <% if (e.kind === 'image') { %>
-                      <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                      <svg viewBox="0 0 24 24" width="24" height="24" fill="url(#grad-image)" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                         <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
                         <circle cx="8.5" cy="8.5" r="1.5"/>
                         <polyline points="21 15 16 10 5 21"/>
                       </svg>
                     <% } else if (e.kind === 'code') { %>
-                      <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                      <svg viewBox="0 0 24 24" width="24" height="24" fill="url(#grad-code)" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                         <polyline points="16 18 22 12 16 6"/>
                         <polyline points="8 6 2 12 8 18"/>
                         <line x1="14" y1="4" x2="10" y2="20"/>
                       </svg>
                     <% } else if (e.kind === 'text') { %>
-                      <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                      <svg viewBox="0 0 24 24" width="24" height="24" fill="url(#grad-text)" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                         <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
                         <polyline points="14 2 14 8 20 8"/>
                         <line x1="16" y1="13" x2="8" y2="13"/>
                         <line x1="16" y1="17" x2="8" y2="17"/>
-                        <polyline points="10 9 9 9 8 9"/>
                       </svg>
                     <% } else if (e.kind === 'archive') { %>
-                      <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                      <svg viewBox="0 0 24 24" width="24" height="24" fill="url(#grad-archive)" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                         <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
                       </svg>
                     <% } else if (e.kind === 'audio') { %>
-                      <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                      <svg viewBox="0 0 24 24" width="24" height="24" fill="url(#grad-media)" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                         <path d="M3 18v-6a9 9 0 0 1 18 0v6"/>
                         <path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/>
                       </svg>
                     <% } else if (e.kind === 'video') { %>
-                      <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                      <svg viewBox="0 0 24 24" width="24" height="24" fill="url(#grad-media)" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                         <polygon points="23 7 16 12 23 17 23 7"/>
                         <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
                       </svg>
                     <% } else if (e.kind === 'pdf') { %>
-                      <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                      <svg viewBox="0 0 24 24" width="24" height="24" fill="url(#grad-pdf)" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                         <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
                         <polyline points="14 2 14 8 20 8"/>
-                        <text x="7" y="17" font-size="6.5" font-family="system-ui" font-weight="800" fill="currentColor">PDF</text>
                       </svg>
                     <% } else { %>
-                      <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                      <svg viewBox="0 0 24 24" width="24" height="24" fill="url(#grad-file)" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                         <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
                         <polyline points="14 2 14 8 20 8"/>
                       </svg>
@@ -358,6 +406,6 @@
     </div>
   </div>
 
-  <script src="/static/js/app.js?v=1.0.4"></script>
+  <script src="/static/js/app.js?v=1.0.5"></script>
 </body>
 </html>
