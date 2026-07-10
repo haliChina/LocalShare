@@ -6,3 +6,7 @@ shared/*
 .DS_Store
 Thumbs.db
 .trae/
+# Security: never commit environment files with secrets
+.env
+.env.local
+.env.*
