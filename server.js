@@ -851,6 +851,61 @@ app.get('/qr.svg', requireBasicAuth, wrap(async function (req, res) {
   }
 }));
 
+// ---------------------------------------------------------------------------
+// Streaming SHA-256 checksum endpoint — the integrity source for the client's
+// chunked "turbo" downloader. Results are cached by (path, mtime, size) so
+// repeated downloads of an unchanged file skip recomputation.
+// ---------------------------------------------------------------------------
+const hashCache = new Map(); // key: relPath|mtime|size -> { sha256 }
+const HASH_CACHE_MAX = 128;
+
+function sha256File(filePath) {
+  return new Promise(function (resolve, reject) {
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(filePath, { highWaterMark: 1024 * 1024 });
+    stream.on('data', function (chunk) { hash.update(chunk); });
+    stream.on('error', reject);
+    stream.on('end', function () { resolve(hash.digest('hex')); });
+  });
+}
+
+app.get(/^\/sha256\/(.*)$/, requireBasicAuth, wrap(async function (req, res) {
+  const sub = decodeURIComponent(req.params[0] || '');
+  const filePath = resolveSafePath(sub);
+  if (!filePath) {
+    res.status(400).json({ ok: false, error: 'Invalid path.' });
+    return;
+  }
+  let stat;
+  try {
+    stat = await fsp.stat(filePath);
+  } catch (err) {
+    res.status(404).json({ ok: false, error: 'Not found.' });
+    return;
+  }
+  if (!stat.isFile()) {
+    res.status(400).json({ ok: false, error: 'Not a file.' });
+    return;
+  }
+  const key = filePath + '|' + stat.mtimeMs + '|' + stat.size;
+  let entry = hashCache.get(key);
+  if (!entry) {
+    try {
+      entry = { sha256: await sha256File(filePath) };
+    } catch (err) {
+      res.status(500).json({ ok: false, error: 'Hash failed: ' + err.message });
+      return;
+    }
+    if (hashCache.size >= HASH_CACHE_MAX) {
+      // Drop the oldest entry (Map preserves insertion order).
+      hashCache.delete(hashCache.keys().next().value);
+    }
+    hashCache.set(key, entry);
+  }
+  res.set('Cache-Control', 'no-store');
+  res.json({ ok: true, sha256: entry.sha256, size: stat.size, algorithm: 'sha256' });
+}));
+
 // Upload errors (busboy emits them on the request stream). Most are caught
 // inside handleUpload; this is a final safety net.
 app.use(function (err, req, res, next) {

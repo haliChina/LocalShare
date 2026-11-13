@@ -21,9 +21,12 @@ LocalShare 是一个 Node.js 内网文件服务，也可以打包成单一 Windo
 
 ## 功能
 
+- **Vercel 风格 UI**：黑白极简设计系统、系统字体 + 本地 Plex Mono、蓝紫点缀、深浅双主题、全本地动效（零 CDN 依赖）
 - 自动列出本机 IPv4 地址和访问 URL
 - **二维码扫码访问**：顶栏一键展开，手机扫码即达（学习 LocalSend / CHFS 的移动端接入）
 - 递归目录浏览、面包屑和文件分类图标，异步 `readdir(withFileTypes)` 列表，大目录不再全树 `stat`
+- **超级下载 Turbo**：⚡ 按钮一键多路并发 Range 分块下载 → 浏览器本地拼装 → SHA-256 与服务端逐位核验 → Blob 保存（学习 IDM/Aria2 的多线程加速）
+- `GET /sha256/<path>` 流式校验和服务端点（mtime/size 键控缓存）
 - 多文件与目录结构上传，最多 200 个文件/请求
 - 单文件大小上限 5 GB，流式写入磁盘
 - 上传实时进度、**速率（MB/s）显示与一键取消**
@@ -137,6 +140,19 @@ GET /zip/<encoded-relative-path>
 
 ```text
 GET /preview/<encoded-relative-path>
+```
+
+流式 SHA-256 校验和（超级下载 Turbo 的完整性数据源，按 mtime/size 缓存）：
+
+```bash
+curl -u admin:change-me http://192.168.1.100:3000/sha256/report.pdf
+# {"ok":true,"sha256":"…","size":1024,"algorithm":"sha256"}
+```
+
+二维码（SVG，内容为当前访问地址）：
+
+```text
+GET /qr.svg
 ```
 
 公开健康检查：
