@@ -1669,3 +1669,254 @@ kbd {
   transform: translateY(-1px);
   box-shadow: 0 6px 16px var(--accent-glow);
 }
+
+/* ===== v1.1.0 additions: entry actions, QR panel, text modal, toast ===== */
+
+/* Entry action buttons (rename / delete), revealed on hover */
+.entry-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  margin-left: auto;
+  opacity: 0;
+  transform: translateX(4px);
+  transition: opacity var(--transition-fast), transform var(--transition-fast);
+}
+
+.entry:hover .entry-actions,
+.entry:focus-within .entry-actions {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.entry-actions .entry-action {
+  margin-left: 0;
+}
+
+/* Touch devices have no hover: always show actions */
+@media (hover: none) {
+  .entry-actions {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.entry-action-danger:hover {
+  background: rgba(220, 38, 38, 0.1);
+  border-color: rgba(220, 38, 38, 0.45);
+  color: #dc2626;
+}
+
+/* Folder entry row is an anchor covering the card */
+.entry-folder .entry-row {
+  display: contents;
+}
+
+.btn-xs {
+  padding: 3px 10px;
+  font-size: 10.5px;
+  border-radius: var(--radius-s);
+}
+
+/* Upload progress with cancel button */
+.upload-progress-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.upload-progress-row .upload-progress-text {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ===== QR quick access panel ===== */
+#qr-panel {
+  display: none;
+}
+
+#qr-panel.is-open {
+  display: block;
+  animation: panelIn 0.3s ease;
+}
+
+@keyframes panelIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.qr-box {
+  display: flex;
+  justify-content: center;
+  padding: 12px 6px 4px;
+}
+
+.qr-box img {
+  width: 180px;
+  height: 180px;
+  background: #ffffff;
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-m);
+  padding: 10px;
+}
+
+/* ===== Text quick-share modal ===== */
+.text-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.text-modal[hidden] {
+  display: none;
+}
+
+.text-modal-shade {
+  position: absolute;
+  inset: 0;
+  background: rgba(24, 19, 14, 0.55);
+  backdrop-filter: blur(3px);
+}
+
+.text-modal-box {
+  position: relative;
+  width: min(560px, 100%);
+  max-height: 82vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-m);
+  box-shadow: 0 24px 60px rgba(20, 14, 8, 0.35);
+  animation: modalIn 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes modalIn {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.text-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.text-modal-head h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.text-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 18px;
+  overflow: auto;
+}
+
+.text-name-input,
+.text-area {
+  width: 100%;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-s);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  padding: 10px 12px;
+  outline: none;
+  transition: border-color var(--transition-fast);
+}
+
+.text-name-input:focus,
+.text-area:focus {
+  border-color: var(--accent);
+}
+
+.text-name-input {
+  max-width: 260px;
+}
+
+.text-area {
+  resize: vertical;
+  min-height: 160px;
+  line-height: 1.6;
+}
+
+.text-modal-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--panel-border);
+}
+
+/* ===== Toast ===== */
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 30px;
+  transform: translateX(-50%) translateY(16px);
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 999px;
+  color: var(--text-primary);
+  font-size: 12.5px;
+  font-weight: 600;
+  box-shadow: 0 10px 30px rgba(20, 14, 8, 0.25);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  max-width: calc(100vw - 40px);
+}
+
+.toast.is-visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+.toast.is-error {
+  border-color: rgba(220, 38, 38, 0.5);
+  color: #dc2626;
+}
+
+/* Compact screens: keep actions reachable */
+@media (max-width: 640px) {
+  .entry-actions {
+    opacity: 1;
+    transform: none;
+  }
+
+  .text-name-input {
+    max-width: none;
+  }
+}
