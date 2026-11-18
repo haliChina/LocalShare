@@ -445,6 +445,20 @@ function handleUpload(req, res, next) {
   const result = { files: [], errors: [] };
   let aborted = false;
 
+  // Audit P2: track in-flight writes so an aborted request (client cancel,
+  // network drop) does not leave partial files behind. Entries are removed
+  // once a write completes successfully; anything left when the request
+  // closes prematurely is unlinked.
+  const pendingWrites = new Set();
+  req.on('close', function () {
+    if (aborted || req.uploadResult) return; // normal completion — keep files
+    pendingWrites.forEach(function (w) {
+      try { w.ws.destroy(); } catch (e) { /* ignore */ }
+      fsp.unlink(w.absTarget).catch(function () { /* already gone */ });
+    });
+    pendingWrites.clear();
+  });
+
   function abort(status, msg) {
     if (aborted) return;
     aborted = true;
@@ -519,15 +533,20 @@ function handleUpload(req, res, next) {
     }
     const absTarget = path.join(targetDir, target);
     const writeStream = fs.createWriteStream(absTarget);
+    const pending = { absTarget: absTarget, ws: writeStream };
+    pendingWrites.add(pending);
     let truncated = false;
     fileStream.on('limit', function () {
       truncated = true;
     });
     fileStream.pipe(writeStream);
     writeStream.on('error', function (err) {
+      pendingWrites.delete(pending);
+      fsp.unlink(absTarget).catch(function () { /* ignore */ });
       result.errors.push({ field: fieldname, name: filename, message: 'Write error: ' + err.message });
     });
     writeStream.on('finish', function () {
+      pendingWrites.delete(pending);
       if (truncated) {
         try { fs.unlinkSync(absTarget); } catch (e) { /* ignore */ }
         result.errors.push({ field: fieldname, name: filename, message: 'File exceeds size limit (' + formatSize(MAX_FILE_SIZE) + ')' });
@@ -774,6 +793,11 @@ app.post('/delete', requireBasicAuth, sameOriginGuard, wrap(async function (req,
   if (!target) {
     return res.status(400).json({ ok: false, error: 'Invalid path.' });
   }
+  // Audit P1: slash-only inputs like "///" normalize back to the shared root;
+  // a recursive rm there would wipe the entire share. Refuse it explicitly.
+  if (path.resolve(target) === path.resolve(SHARED_DIR)) {
+    return res.status(400).json({ ok: false, error: 'Refusing to delete the shared root.' });
+  }
   try {
     await fsp.rm(target, { recursive: true, force: false });
   } catch (err) {
@@ -823,6 +847,14 @@ app.post('/rename', requireBasicAuth, sameOriginGuard, wrap(async function (req,
   } catch (err) {
     return res.status(404).json({ ok: false, error: 'Not found.' });
   }
+  // Audit P1: POSIX rename() silently replaces an existing destination.
+  // Refuse overwrites so a rename can never clobber another entry.
+  try {
+    await fsp.access(to);
+    return res.status(409).json({ ok: false, error: 'Target name already exists.' });
+  } catch (err) {
+    /* destination absent — safe to rename */
+  }
   try {
     await fsp.rename(from, to);
   } catch (err) {
@@ -838,7 +870,16 @@ app.post('/rename', requireBasicAuth, sameOriginGuard, wrap(async function (req,
 // QR code (SVG) — scan to open this share on a phone, like LocalSend/CHFS.
 // ---------------------------------------------------------------------------
 app.get('/qr.svg', requireBasicAuth, wrap(async function (req, res) {
-  const host = req.headers.host || (getPrimaryIPv4() + ':' + PORT);
+  // Audit note: the QR content is derived from the Host header, which a
+  // client can spoof. Only trust hosts that resolve to this machine
+  // (loopback or one of our LAN IPv4 addresses); anything else falls back
+  // to the primary local address so the code always points back here.
+  let host = getPrimaryIPv4() + ':' + PORT;
+  const rawHost = String(req.headers.host || '');
+  const hostname = rawHost.split(':')[0].trim().toLowerCase();
+  const trusted = hostname === 'localhost' || hostname === '127.0.0.1' ||
+    hostname === '[::1]' || getLocalIPv4Addresses().indexOf(hostname) !== -1;
+  if (rawHost && trusted) host = rawHost;
   const text = req.protocol + '://' + host + '/';
   try {
     const svg = await QRCode.toString(text, { type: 'svg', margin: 1, width: 240 });

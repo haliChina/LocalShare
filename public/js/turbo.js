@@ -189,11 +189,23 @@
   }
 
   /* ---------- 引擎 ---------- */
+  // Audit P2: assembling keeps the full file plus all chunk buffers in
+  // memory at once, so cap Turbo at 256 MB (peak ≈ 512 MB) and fall back to
+  // the browser's own streaming download beyond that.
+  var TURBO_MAX_BYTES = 256 * 1024 * 1024;
+
   function pickChunks(size) {
     // 每块目标 ≥ 1MB；1–8 路并发
     var n = Math.max(1, Math.min(8, Math.ceil(size / (1024 * 1024))));
     if (size <= 512 * 1024) n = 1; // 小文件没必要分块
     return n;
+  }
+
+  function fallbackPlain(rel) {
+    var a = document.createElement('a');
+    a.href = '/raw/' + encodeURI(rel) + '?dl=1';
+    a.download = '';
+    document.body.appendChild(a); a.click(); a.remove();
   }
 
   function start(rel, name, sizeBytes) {
@@ -232,8 +244,55 @@
       if (!S || S.aborted) return;
       S.expectedHash = rs[1];
       var size = S.size;
-      if (!size) throw new Error('无法获取文件大小');
+      if (size == null || size < 0) throw new Error('无法获取文件大小');
+
+      // Audit P2: memory guard — beyond the cap the client cannot safely hold
+      // chunks + assembled copy; let the browser stream it instead.
+      if (size > TURBO_MAX_BYTES) {
+        setStage('文件超过 ' + fmtBytes(TURBO_MAX_BYTES) + '，已改用浏览器普通下载', '');
+        pMeta.textContent = fmtBytes(size) + ' · 超级下载上限 ' + fmtBytes(TURBO_MAX_BYTES);
+        setTimeout(function () { fallbackPlain(rel); }, 400);
+        return;
+      }
       pMeta.textContent = fmtBytes(size) + ' · SHA-256 ' + (S.expectedHash ? '已就绪' : '不可用（跳过核验）');
+
+      var t0 = performance.now();
+
+      function finishWith(hex) {
+        if (!S || S.aborted) return;
+        var line;
+        // 完成态：以总耗时 + 平均速度代替瞬时速度（避免停留在 0.0）
+        var elapsedSec = Math.max(0.05, (performance.now() - t0) / 1000);
+        pSpeed.textContent = fmtSpeed((size / 1048576) / elapsedSec) + ' avg · ' + elapsedSec.toFixed(1) + 's';
+        if (!S.expectedHash) {
+          line = '本地哈希: <code>' + hex + '</code><br>服务端哈希不可用，已跳过核验';
+          setStage('完成（未核验）', '');
+        } else if (hex === S.expectedHash) {
+          line = '本地拼装: <code>' + hex + '</code><br>服务端: <code>' + S.expectedHash + '</code><b class="turbo-ok">✓ 完整性核验通过 — 逐位一致</b>';
+          setStage('✓ 下载完成 · 核验通过', 'ok');
+        } else {
+          line = '本地拼装: <code>' + hex + '</code><br>服务端: <code>' + S.expectedHash + '</code><b class="turbo-bad">✗ 校验不一致，请重试</b>';
+          setStage('✗ 核验失败', 'bad');
+        }
+        pVerify.innerHTML = line;
+        pVerify.hidden = false;
+        qs('#turbo-actions').hidden = false;
+        qs('#turbo-cancel-row').hidden = true;
+        qs('#turbo-save').disabled = (S.expectedHash && hex !== S.expectedHash);
+        S.blobs = [new Blob([S.assembled])];
+        S.assembled = null; // Blob 已持有数据，释放直拷引用
+        S.done = true;
+        // 核验通过后自动保存
+        if (S.expectedHash && hex === S.expectedHash) setTimeout(save, 350);
+      }
+
+      // Audit P2: zero-byte files are valid — skip chunking entirely.
+      if (size === 0) {
+        S.assembled = new Uint8Array(0);
+        setStage('④ SHA-256 完整性核验（空文件）…', 'run');
+        hashBuffer(S.assembled.buffer).then(finishWith);
+        return;
+      }
 
       // 2) 拆解分块
       var N = pickChunks(size);
@@ -248,15 +307,16 @@
       renderChunks(ranges);
       setStage('② ' + ranges.length + ' 路并发分块下载中…', 'run');
 
-      // 3) 并发下载
+      // 3) 并发下载（流式读取，实时累计已收字节）
       var states = ranges.map(function () { return 'wait'; });
       var loaded = new Array(ranges.length).fill(0);
-      var t0 = performance.now();
-      var totalLoaded = 0;
       var doneCnt = 0;
 
       function uiTick() {
         if (!S) return;
+        // Audit P2: totalLoaded was never updated before — derive it live.
+        var totalLoaded = 0;
+        for (var i = 0; i < loaded.length; i++) totalLoaded += loaded[i];
         var pct = Math.min(100, Math.round(totalLoaded / size * 100));
         pBar.style.width = pct + '%';
         pPct.textContent = pct + '%';
@@ -264,7 +324,8 @@
         if (secs > 0.15) pSpeed.textContent = fmtSpeed((totalLoaded / 1048576) / secs);
         renderChunks(ranges, states);
       }
-      var uiTimer = setInterval(uiTick, 120);
+      // Audit P2: keep the timer on S so cancel/error paths clear it too.
+      S.uiTimer = setInterval(uiTick, 120);
 
       function fetchChunk(i) {
         states[i] = 'run';
@@ -274,9 +335,34 @@
           headers: { 'Range': 'bytes=' + ranges[i].start + '-' + ranges[i].end }
         }).then(function (r) {
           if (r.status !== 206) throw new Error('分块 #' + (i + 1) + ' 未返回 206（HTTP ' + r.status + '）');
-          return r.arrayBuffer();
-        }).then(function (buf) {
-          S.parts[i] = new Uint8Array(buf);
+          if (!r.body || !r.body.getReader) {
+            // 兜底：无流式 reader 时一次性读取
+            return r.arrayBuffer().then(function (b) {
+              var u = new Uint8Array(b);
+              loaded[i] = u.length;
+              return u;
+            });
+          }
+          var reader = r.body.getReader();
+          var pieces = [];
+          var total = 0;
+          function pump() {
+            return reader.read().then(function (res) {
+              if (res.done) {
+                var out = new Uint8Array(total);
+                var o = 0;
+                for (var c = 0; c < pieces.length; c++) { out.set(pieces[c], o); o += pieces[c].length; }
+                return out;
+              }
+              pieces.push(res.value);
+              total += res.value.length;
+              loaded[i] = total;
+              return pump();
+            });
+          }
+          return pump();
+        }).then(function (u) {
+          S.parts[i] = u;
           states[i] = 'done';
           doneCnt++;
           uiTick();
@@ -285,7 +371,7 @@
 
       var jobs = ranges.map(function (_, i) { return fetchChunk(i); });
       return Promise.all(jobs).then(function () {
-        clearInterval(uiTimer);
+        clearInterval(S ? S.uiTimer : undefined);
         if (!S || S.aborted) return;
         // 4) 本地拼装
         pBar.style.width = '100%'; pPct.textContent = '100%';
@@ -298,38 +384,15 @@
             asm.set(S.parts[i], off);
             off += S.parts[i].length;
           }
-          S.assembled = asm;
           if (off !== size) throw new Error('拼装大小不符: ' + off + ' ≠ ' + size);
+          S.assembled = asm;
+          S.parts = null; // Audit P2: release chunk buffers right after assembly
           setStage('④ SHA-256 完整性核验…', 'run');
-          return hashBuffer(asm.buffer);
-        }).then(function (hex) {
-          if (!S || S.aborted) return;
-          var line;
-          // 完成态：以总耗时 + 平均速度代替瞬时速度（避免停留在 0.0）
-          var elapsedSec = Math.max(0.05, (performance.now() - t0) / 1000);
-          pSpeed.textContent = fmtSpeed((size / 1048576) / elapsedSec) + ' avg · ' + elapsedSec.toFixed(1) + 's';
-          if (!S.expectedHash) {
-            line = '本地哈希: <code>' + hex + '</code><br>服务端哈希不可用，已跳过核验';
-            setStage('完成（未核验）', '');
-          } else if (hex === S.expectedHash) {
-            line = '本地拼装: <code>' + hex + '</code><br>服务端: <code>' + S.expectedHash + '</code><b class="turbo-ok">✓ 完整性核验通过 — 逐位一致</b>';
-            setStage('✓ 下载完成 · 核验通过', 'ok');
-          } else {
-            line = '本地拼装: <code>' + hex + '</code><br>服务端: <code>' + S.expectedHash + '</code><b class="turbo-bad">✗ 校验不一致，请重试</b>';
-            setStage('✗ 核验失败', 'bad');
-          }
-          pVerify.innerHTML = line;
-          pVerify.hidden = false;
-          qs('#turbo-actions').hidden = false;
-          qs('#turbo-cancel-row').hidden = true;
-          qs('#turbo-save').disabled = (S.expectedHash && hex !== S.expectedHash);
-          S.blobs = [new Blob([S.assembled])];
-          S.done = true;
-          // 核验通过后自动保存
-          if (S.expectedHash && hex === S.expectedHash) setTimeout(save, 350);
+          return hashBuffer(asm.buffer).then(finishWith);
         });
       });
     }).catch(function (err) {
+      if (S && S.uiTimer) clearInterval(S.uiTimer);
       if (!S || S.aborted) return;
       if (String(err).indexOf('AbortError') === -1) {
         setStage('✗ ' + (err && err.message ? err.message : err), 'bad');
@@ -338,7 +401,12 @@
   }
 
   function cancel() {
-    if (S) { S.aborted = true; try { S.abort.abort(); } catch (e) {} S = null; }
+    if (S) {
+      S.aborted = true;
+      if (S.uiTimer) clearInterval(S.uiTimer);
+      try { S.abort.abort(); } catch (e) {}
+      S = null;
+    }
   }
 
   function save() {
