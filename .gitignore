@@ -10,3 +10,5 @@ Thumbs.db
 .env
 .env.local
 .env.*
+.node/
+log_*.txt
