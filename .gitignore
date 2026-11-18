@@ -10,5 +10,6 @@ Thumbs.db
 .env
 .env.local
 .env.*
+.fuse_hidden*
 .node/
 log_*.txt

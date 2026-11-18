@@ -6,17 +6,21 @@
 //   drop files in/out of it.
 //
 // Features:
-//   - Recursive folder browsing via path segments in the URL.
+//   - Recursive folder browsing via path segments in the URL (async, no full-tree stats).
 //   - Breadcrumb navigation.
 //   - In-browser preview for images, text, code, markdown, JSON, audio, video.
 //   - One-click folder download as a streamed zip archive.
 //   - Path-preserving uploads: relative directory structure is kept.
-//   - HTTP Basic Auth (--auth user:pass or AUTH env).
+//   - File management: delete, rename, new folder (like Dufs / CHFS).
+//   - QR code endpoint for quick mobile access (like LocalSend / CHFS).
+//   - HTTP Basic Auth with timing-safe comparison and per-IP rate limiting.
+//   - Range/resume aware downloads with CSP sandbox on raw responses.
 //
 // CLI options:
 //   --port <n>          Listen on port n (overrides PORT env var). Default 3000.
 //   --auth <user>:<pw>  Enable HTTP Basic Auth with the given credentials.
 //                       Overrides AUTH env var. Disables auth if set to "off"/"none".
+//   --title <name>      Custom service name (overrides TITLE / NAME env var).
 //   --help              Show usage information.
 
 'use strict';
@@ -26,7 +30,10 @@ const archiver = require('archiver');
 const Busboy = require('busboy');
 const path = require('path');
 const fs = require('fs');
+const fsp = fs.promises;
 const os = require('os');
+const crypto = require('crypto');
+const QRCode = require('qrcode');
 
 // ---------------------------------------------------------------------------
 // Runtime environment helpers
@@ -275,90 +282,99 @@ function resolveSafePath(relPath) {
   return resolved;
 }
 
+// Sanitize a single path segment (file/folder name) for create/rename.
+// Returns the cleaned name, or null when invalid.
+function sanitizeName(name) {
+  if (typeof name !== 'string') return null;
+  name = name.trim();
+  if (!name || name.length > 255) return null;
+  if (name === '.' || name === '..') return null;
+  if (name.startsWith('.')) return null; // keep hidden files out of the UI
+  if (/[/\\]/.test(name)) return null;
+  // Reject control characters and NUL bytes.
+  if (/[\x00-\x1f\x7f]/.test(name)) return null;
+  // Reject Windows reserved device names (case-insensitive, with optional extension).
+  const stem = name.split('.')[0].toUpperCase();
+  if (/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/.test(stem)) return null;
+  return name;
+}
+
 // Convert a URL-style relative path (forward slashes) into the form used
 // in HTML hrefs (URI-encoded segments joined by '/').
 function urlJoin(parts) {
   return parts.map(function (p) { return encodeURIComponent(p); }).join('/');
 }
 
-// Recursively collect every file path under `dir` (relative to SHARED_DIR).
-// Returns { totalBytes, fileCount, errors }.
-function collectAllFiles(dir, baseRel) {
-  const result = { totalBytes: 0, fileCount: 0, errors: [] };
-  function walk(absDir, relSoFar) {
-    let names;
-    try {
-      names = fs.readdirSync(absDir);
-    } catch (err) {
-      result.errors.push({ path: relSoFar, message: err.message });
-      return;
-    }
-    for (const name of names) {
-      if (name.startsWith('.')) continue;
-      const abs = path.join(absDir, name);
-      const rel = relSoFar ? relSoFar + '/' + name : name;
-      let st;
-      try {
-        st = fs.statSync(abs);
-      } catch (err) {
-        result.errors.push({ path: rel, message: err.message });
-        continue;
-      }
-      if (st.isDirectory()) {
-        walk(abs, rel);
-      } else if (st.isFile()) {
-        result.totalBytes += st.size;
-        result.fileCount += 1;
-      }
-    }
-  }
-  walk(dir, baseRel);
-  return result;
+// RFC 5987 Content-Disposition filename encoding: ASCII fallback + UTF-8 name.
+function contentDisposition(name, type) {
+  const fallback = String(name).replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
+  return type
+    + '; filename="' + fallback + '"'
+    + "; filename*=UTF-8''" + encodeURIComponent(name);
 }
 
-function listDirectory(dirAbs, relDir) {
+// ---------------------------------------------------------------------------
+// Async directory listing (fast path: readdir with dirents, no full-tree walk)
+// ---------------------------------------------------------------------------
+async function listDirectory(dirAbs, relDir) {
   // relDir is the directory's path relative to SHARED_DIR ('' for root).
-  let names;
+  let dirents;
   try {
-    names = fs.readdirSync(dirAbs);
+    dirents = await fsp.readdir(dirAbs, { withFileTypes: true });
   } catch (err) {
-    return { entries: [], breadcrumb: [], parent: null, relDir: relDir, total: 0, folderCount: 0, fileCount: 0 };
+    return { entries: [], breadcrumb: [], parent: null, relDir: relDir, total: 0, folderCount: 0, fileCount: 0, totalBytes: 0, totalBytesText: '-' };
   }
   const entries = [];
   let folderCount = 0;
   let fileCount = 0;
   let totalBytes = 0;
-  for (const name of names) {
-    if (name.startsWith('.')) continue;
-    const full = path.join(dirAbs, name);
-    let stat;
-    try {
-      stat = fs.statSync(full);
-    } catch (err) {
-      continue;
-    }
-    const rel = relDir ? relDir + '/' + name : name;
-    if (stat.isDirectory()) {
+  const folderJobs = [];
+  for (const d of dirents) {
+    if (d.name.startsWith('.')) continue;
+    const rel = relDir ? relDir + '/' + d.name : d.name;
+    if (d.isDirectory()) {
       folderCount += 1;
-      // Count files inside for badge.
-      const sub = collectAllFiles(full, rel);
-      entries.push({
+      // Folder badge shows the number of items directly inside (one extra
+      // readdir, bounded) instead of the old full recursive walk that
+      // stat'ed the whole subtree on every page render.
+      const job = fsp.readdir(path.join(dirAbs, d.name))
+        .then(function (kids) {
+          const visible = kids.filter(function (k) { return !k.startsWith('.'); });
+          return visible.length;
+        })
+        .catch(function () { return -1; });
+      const entry = {
         type: 'folder',
-        name: name,
+        name: d.name,
         relPath: rel,
-        sizeBytes: sub.totalBytes,
-        sizeText: sub.fileCount + ' 项' + (sub.fileCount > 0 ? ' · ' + formatSize(sub.totalBytes) : ''),
-        mtime: stat.mtimeMs,
-        mtimeText: formatTime(stat.mtimeMs),
-        childCount: sub.fileCount,
-      });
-    } else if (stat.isFile()) {
+        sizeBytes: 0,
+        sizeText: '…',
+        mtime: 0,
+        mtimeText: '-',
+        childCount: 0,
+      };
+      folderJobs.push(job.then(function (n) {
+        entry.childCount = n;
+        entry.sizeText = n >= 0 ? (n + ' 项') : '文件夹';
+      }));
+      fsp.stat(path.join(dirAbs, d.name)).then(function (st) {
+        entry.mtime = st.mtimeMs;
+        entry.mtimeText = formatTime(st.mtimeMs);
+      }).catch(function () { /* keep placeholder */ });
+      entries.push(entry);
+    } else if (d.isFile()) {
       fileCount += 1;
+      let stat;
+      try {
+        stat = await fsp.stat(path.join(dirAbs, d.name));
+      } catch (err) {
+        continue;
+      }
       totalBytes += stat.size;
       entries.push({
         type: 'file',
-        kind: classifyFile(name),
-        name: name,
+        kind: classifyFile(d.name),
+        name: d.name,
         relPath: rel,
         sizeBytes: stat.size,
         sizeText: formatSize(stat.size),
@@ -367,6 +383,8 @@ function listDirectory(dirAbs, relDir) {
       });
     }
   }
+  // Wait for the (bounded) folder badges and mtimes before rendering.
+  await Promise.all(folderJobs);
   // Folders first (alpha), then files (newest first).
   entries.sort(function (a, b) {
     if (a.type !== b.type) return a.type === 'folder' ? -1 : 1;
@@ -515,7 +533,13 @@ function handleUpload(req, res, next) {
         result.errors.push({ field: fieldname, name: filename, message: 'File exceeds size limit (' + formatSize(MAX_FILE_SIZE) + ')' });
         return;
       }
-      const stat = fs.statSync(absTarget);
+      let stat;
+      try {
+        stat = fs.statSync(absTarget);
+      } catch (err) {
+        result.errors.push({ field: fieldname, name: target, message: 'Post-write stat failed: ' + err.message });
+        return;
+      }
       result.files.push({
         field: fieldname,
         name: target,
@@ -538,8 +562,53 @@ function handleUpload(req, res, next) {
 }
 
 // ---------------------------------------------------------------------------
-// HTTP Basic Auth helpers
+// HTTP Basic Auth helpers (timing-safe + per-IP rate limiting)
 // ---------------------------------------------------------------------------
+// Compare two secrets in constant time. Hashing both sides first makes the
+// digest lengths equal regardless of input length.
+function timingSafeEqualStr(a, b) {
+  const ha = crypto.createHash('sha256').update(String(a), 'utf8').digest();
+  const hb = crypto.createHash('sha256').update(String(b), 'utf8').digest();
+  return crypto.timingSafeEqual(ha, hb);
+}
+
+// Naive in-memory sliding window limiter for failed Basic Auth attempts.
+const AUTH_MAX_FAILURES = 10;      // allowed failures per window...
+const AUTH_WINDOW_MS = 5 * 60 * 1000; // ...per 5 minutes
+const authFailures = new Map();    // ip -> { count, resetAt }
+
+function authRateLimited(ip) {
+  const rec = authFailures.get(ip);
+  if (!rec) return false;
+  if (Date.now() >= rec.resetAt) {
+    authFailures.delete(ip);
+    return false;
+  }
+  return rec.count >= AUTH_MAX_FAILURES;
+}
+
+function recordAuthFailure(ip) {
+  const now = Date.now();
+  let rec = authFailures.get(ip);
+  if (!rec || now >= rec.resetAt) {
+    rec = { count: 0, resetAt: now + AUTH_WINDOW_MS };
+    authFailures.set(ip, rec);
+  }
+  rec.count += 1;
+}
+
+function clearAuthFailures(ip) {
+  authFailures.delete(ip);
+}
+
+// Periodic cleanup so the map does not grow forever.
+setInterval(function () {
+  const now = Date.now();
+  for (const [ip, rec] of authFailures) {
+    if (now >= rec.resetAt) authFailures.delete(ip);
+  }
+}, 60 * 1000).unref();
+
 function checkBasicAuth(headerValue) {
   if (!headerValue || typeof headerValue !== 'string') return false;
   if (headerValue.indexOf('Basic ') !== 0) return false;
@@ -549,14 +618,45 @@ function checkBasicAuth(headerValue) {
   } catch (e) {
     return false;
   }
-  return decoded === AUTH.user + ':' + AUTH.pass;
+  const idx = decoded.indexOf(':');
+  if (idx < 0) return false;
+  const user = decoded.slice(0, idx);
+  const pass = decoded.slice(idx + 1);
+  return timingSafeEqualStr(user, AUTH.user) && timingSafeEqualStr(pass, AUTH.pass);
 }
 
 function requireBasicAuth(req, res, next) {
   if (!AUTH.enabled) return next();
-  if (checkBasicAuth(req.headers.authorization)) return next();
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+  if (authRateLimited(ip)) {
+    res.set('Retry-After', '60');
+    return res.status(429).send('Too many failed attempts. Try again later.');
+  }
+  if (checkBasicAuth(req.headers.authorization)) {
+    clearAuthFailures(ip);
+    return next();
+  }
+  recordAuthFailure(ip);
   res.set('WWW-Authenticate', 'Basic realm="' + AUTH_REALM + '", charset="UTF-8"');
   res.status(401).send('Unauthorized');
+}
+
+// Reject cross-site form posts against state-changing JSON endpoints (CSRF).
+function sameOriginGuard(req, res, next) {
+  const origin = req.headers.origin;
+  if (!origin) return next(); // same-origin fetch sends Origin only on cross-origin in some cases; curl sends none
+  try {
+    const o = new URL(origin);
+    if (o.host === req.headers.host) return next();
+  } catch (e) { /* fallthrough */ }
+  res.status(403).json({ ok: false, error: 'Cross-origin request rejected.' });
+}
+
+// Wrap async route handlers so rejections reach the error middleware.
+function wrap(fn) {
+  return function (req, res, next) {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -567,21 +667,24 @@ const app = express();
 app.set('view engine', 'ejs');
 app.set('views', path.join(RESOURCE_DIR, 'views'));
 app.set('trust proxy', false);
+app.disable('x-powered-by');
 
 // Static assets: protect with auth so styles/scripts/icons don't bypass it.
+// URLs are versioned with ?v= so a week of caching is safe.
 app.use('/static', requireBasicAuth, express.static(path.join(RESOURCE_DIR, 'public'), {
   etag: true,
-  maxAge: 0,
+  maxAge: '7d',
 }));
 
-// Multipart body parser for /upload. We don't need urlencoded parsing for the
-// UI, but it's harmless to enable.
-app.use(express.urlencoded({ extended: false, limit: '1mb' }));
+// JSON bodies for the management API (delete / mkdir / rename).
+app.use(express.json({ limit: '128kb' }));
+// Kept for curl users who prefer form encoding.
+app.use(express.urlencoded({ extended: false, limit: '128kb' }));
 
 // Routes --------------------------------------------------------------------
 
-// Catch-all "/" + "/browse/...". We route by URL-decoded path segments.
-function handleIndex(req, res) {
+// Catch-all "/" + "/browse/..." . We route by URL-decoded path segments.
+async function handleIndex(req, res) {
   const rawSub = req.params[0] || '';
   const sub = decodeURIComponent(rawSub);
   const target = resolveSafePath(sub);
@@ -591,7 +694,7 @@ function handleIndex(req, res) {
   }
   let stat;
   try {
-    stat = fs.statSync(target);
+    stat = await fsp.stat(target);
   } catch (err) {
     res.status(404).render('error', {
       title: TITLE,
@@ -612,7 +715,7 @@ function handleIndex(req, res) {
     });
     return;
   }
-  const view = listDirectory(target, sub);
+  const view = await listDirectory(target, sub);
   const host = req.hostname && req.hostname !== '::1' && req.hostname !== '127.0.0.1'
     ? req.hostname
     : getPrimaryIPv4();
@@ -632,13 +735,13 @@ function handleIndex(req, res) {
   });
 }
 
-app.get('/', requireBasicAuth, function (req, res) { handleIndex(req, res); });
-app.get(/^\/browse\/(.*)$/, requireBasicAuth, function (req, res) { handleIndex(req, res); });
+app.get('/', requireBasicAuth, wrap(handleIndex));
+app.get(/^\/browse\/(.*)$/, requireBasicAuth, wrap(handleIndex));
 
 // Upload (preserves relative paths from folder picking).
 // The route regex captures the optional sub-path with a leading slash (e.g.
 // "/foo/bar" or ""), which we strip before treating it as a relative path.
-app.post(/\/upload(\/.*)?$/, requireBasicAuth, handleUpload, function (req, res) {
+app.post(/\/upload(\/.*)?$/, requireBasicAuth, sameOriginGuard, handleUpload, function (req, res) {
   // If any file had a per-file error (invalid path, write error, etc.),
   // surface a 400 with the first error message. We only redirect on a clean
   // upload, so the client never thinks a traversal attempt succeeded.
@@ -658,6 +761,151 @@ app.post(/\/upload(\/.*)?$/, requireBasicAuth, handleUpload, function (req, res)
   }
 });
 
+// ---------------------------------------------------------------------------
+// File management API (delete / mkdir / rename) — modelled after Dufs / CHFS.
+// All endpoints are POST + JSON and require auth + same-origin.
+// ---------------------------------------------------------------------------
+app.post('/delete', requireBasicAuth, sameOriginGuard, wrap(async function (req, res) {
+  const rel = String((req.body && req.body.path) || '');
+  if (!rel) {
+    return res.status(400).json({ ok: false, error: 'Refusing to delete the shared root.' });
+  }
+  const target = resolveSafePath(rel);
+  if (!target) {
+    return res.status(400).json({ ok: false, error: 'Invalid path.' });
+  }
+  try {
+    await fsp.rm(target, { recursive: true, force: false });
+  } catch (err) {
+    if (err.code === 'ENOENT') return res.status(404).json({ ok: false, error: 'Not found.' });
+    return res.status(500).json({ ok: false, error: 'Delete failed: ' + err.message });
+  }
+  res.json({ ok: true, path: rel });
+}));
+
+app.post('/mkdir', requireBasicAuth, sameOriginGuard, wrap(async function (req, res) {
+  const body = req.body || {};
+  const parentRel = String(body.parent || '');
+  const name = sanitizeName(String(body.name || ''));
+  if (!name) {
+    return res.status(400).json({ ok: false, error: 'Invalid folder name.' });
+  }
+  const parent = resolveSafePath(parentRel);
+  if (!parent) {
+    return res.status(400).json({ ok: false, error: 'Invalid parent path.' });
+  }
+  const target = path.join(parent, name);
+  try {
+    await fsp.mkdir(target, { recursive: false });
+  } catch (err) {
+    if (err.code === 'EEXIST') return res.status(409).json({ ok: false, error: 'Already exists.' });
+    return res.status(500).json({ ok: false, error: 'Create failed: ' + err.message });
+  }
+  res.json({ ok: true, path: parentRel ? parentRel + '/' + name : name });
+}));
+
+app.post('/rename', requireBasicAuth, sameOriginGuard, wrap(async function (req, res) {
+  const body = req.body || {};
+  const fromRel = String(body.from || '');
+  const name = sanitizeName(String(body.name || ''));
+  if (!fromRel || !name) {
+    return res.status(400).json({ ok: false, error: 'Invalid path or name.' });
+  }
+  const from = resolveSafePath(fromRel);
+  if (!from) {
+    return res.status(400).json({ ok: false, error: 'Invalid path.' });
+  }
+  const parentRel = fromRel.split('/').slice(0, -1).join('/');
+  const to = path.join(resolveSafePath(parentRel) || SHARED_DIR, name);
+  if (from === to) return res.json({ ok: true, path: fromRel });
+  try {
+    await fsp.access(from);
+  } catch (err) {
+    return res.status(404).json({ ok: false, error: 'Not found.' });
+  }
+  try {
+    await fsp.rename(from, to);
+  } catch (err) {
+    if (err.code === 'EEXIST' || err.code === 'ENOTEMPTY') {
+      return res.status(409).json({ ok: false, error: 'Target name already exists.' });
+    }
+    return res.status(500).json({ ok: false, error: 'Rename failed: ' + err.message });
+  }
+  res.json({ ok: true, path: parentRel ? parentRel + '/' + name : name });
+}));
+
+// ---------------------------------------------------------------------------
+// QR code (SVG) — scan to open this share on a phone, like LocalSend/CHFS.
+// ---------------------------------------------------------------------------
+app.get('/qr.svg', requireBasicAuth, wrap(async function (req, res) {
+  const host = req.headers.host || (getPrimaryIPv4() + ':' + PORT);
+  const text = req.protocol + '://' + host + '/';
+  try {
+    const svg = await QRCode.toString(text, { type: 'svg', margin: 1, width: 240 });
+    res.set('Content-Type', 'image/svg+xml; charset=utf-8');
+    res.set('Cache-Control', 'no-store');
+    res.set('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'");
+    res.send(svg);
+  } catch (err) {
+    res.status(500).send('QR generation failed.');
+  }
+}));
+
+// ---------------------------------------------------------------------------
+// Streaming SHA-256 checksum endpoint — the integrity source for the client's
+// chunked "turbo" downloader. Results are cached by (path, mtime, size) so
+// repeated downloads of an unchanged file skip recomputation.
+// ---------------------------------------------------------------------------
+const hashCache = new Map(); // key: relPath|mtime|size -> { sha256 }
+const HASH_CACHE_MAX = 128;
+
+function sha256File(filePath) {
+  return new Promise(function (resolve, reject) {
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(filePath, { highWaterMark: 1024 * 1024 });
+    stream.on('data', function (chunk) { hash.update(chunk); });
+    stream.on('error', reject);
+    stream.on('end', function () { resolve(hash.digest('hex')); });
+  });
+}
+
+app.get(/^\/sha256\/(.*)$/, requireBasicAuth, wrap(async function (req, res) {
+  const sub = decodeURIComponent(req.params[0] || '');
+  const filePath = resolveSafePath(sub);
+  if (!filePath) {
+    res.status(400).json({ ok: false, error: 'Invalid path.' });
+    return;
+  }
+  let stat;
+  try {
+    stat = await fsp.stat(filePath);
+  } catch (err) {
+    res.status(404).json({ ok: false, error: 'Not found.' });
+    return;
+  }
+  if (!stat.isFile()) {
+    res.status(400).json({ ok: false, error: 'Not a file.' });
+    return;
+  }
+  const key = filePath + '|' + stat.mtimeMs + '|' + stat.size;
+  let entry = hashCache.get(key);
+  if (!entry) {
+    try {
+      entry = { sha256: await sha256File(filePath) };
+    } catch (err) {
+      res.status(500).json({ ok: false, error: 'Hash failed: ' + err.message });
+      return;
+    }
+    if (hashCache.size >= HASH_CACHE_MAX) {
+      // Drop the oldest entry (Map preserves insertion order).
+      hashCache.delete(hashCache.keys().next().value);
+    }
+    hashCache.set(key, entry);
+  }
+  res.set('Cache-Control', 'no-store');
+  res.json({ ok: true, sha256: entry.sha256, size: stat.size, algorithm: 'sha256' });
+}));
+
 // Upload errors (busboy emits them on the request stream). Most are caught
 // inside handleUpload; this is a final safety net.
 app.use(function (err, req, res, next) {
@@ -668,8 +916,13 @@ app.use(function (err, req, res, next) {
   next(err);
 });
 
-// File download (single file). /raw/<encoded path...>
-app.get(/^\/raw\/(.*)$/, requireBasicAuth, function (req, res) {
+// File download / inline view. /raw/<encoded path...>
+// - Default is inline so <img>/<video>/<audio> previews stream nicely.
+// - ?dl=1 switches to attachment (the UI also uses the `download` attribute).
+// - Range requests are honoured by res.sendFile, so interrupted downloads
+//   and video seeking work out of the box.
+// - CSP sandbox + nosniff keep uploaded HTML from executing in our origin.
+app.get(/^\/raw\/(.*)$/, requireBasicAuth, wrap(async function (req, res) {
   const sub = decodeURIComponent(req.params[0] || '');
   const filePath = resolveSafePath(sub);
   if (!filePath) {
@@ -678,7 +931,7 @@ app.get(/^\/raw\/(.*)$/, requireBasicAuth, function (req, res) {
   }
   let stat;
   try {
-    stat = fs.statSync(filePath);
+    stat = await fsp.stat(filePath);
   } catch (err) {
     res.status(404).send('Not found.');
     return;
@@ -687,15 +940,26 @@ app.get(/^\/raw\/(.*)$/, requireBasicAuth, function (req, res) {
     res.status(400).send('Not a file.');
     return;
   }
-  res.download(filePath, path.basename(filePath), function (err) {
+  const isAttachment = req.query.dl === '1' || req.query.dl === 'true';
+  const disposition = contentDisposition(path.basename(filePath), isAttachment ? 'attachment' : 'inline');
+  res.sendFile(filePath, {
+    headers: {
+      'Content-Disposition': disposition,
+      'Content-Security-Policy': 'sandbox',
+      'X-Content-Type-Options': 'nosniff',
+      'Cache-Control': 'no-store',
+    },
+    lastModified: true,
+    acceptRanges: true,
+  }, function (err) {
     if (err && !res.headersSent) {
-      res.status(500).send('Download error: ' + err.message);
+      res.status(500).send('Download error: ' + (err.message || err));
     }
   });
-});
+}));
 
 // Folder zip download. /zip/<encoded path...>
-app.get(/^\/zip\/(.*)$/, requireBasicAuth, function (req, res) {
+app.get(/^\/zip\/(.*)$/, requireBasicAuth, wrap(async function (req, res) {
   const sub = decodeURIComponent(req.params[0] || '');
   const dirAbs = resolveSafePath(sub);
   if (!dirAbs) {
@@ -704,7 +968,7 @@ app.get(/^\/zip\/(.*)$/, requireBasicAuth, function (req, res) {
   }
   let stat;
   try {
-    stat = fs.statSync(dirAbs);
+    stat = await fsp.stat(dirAbs);
   } catch (err) {
     res.status(404).send('Not found.');
     return;
@@ -718,7 +982,7 @@ app.get(/^\/zip\/(.*)$/, requireBasicAuth, function (req, res) {
   const zipName = baseName + '.zip';
 
   res.set('Content-Type', 'application/zip');
-  res.set('Content-Disposition', 'attachment; filename="' + encodeURIComponent(zipName) + '"');
+  res.set('Content-Disposition', contentDisposition(zipName, 'attachment'));
 
   const archive = archiver('zip', { zlib: { level: 0 } }); // store-only for speed
   archive.on('warning', function (err) {
@@ -741,10 +1005,10 @@ app.get(/^\/zip\/(.*)$/, requireBasicAuth, function (req, res) {
     return entry;
   });
   archive.finalize();
-});
+}));
 
 // Preview API. /preview/<encoded path...>  (returns JSON for files <= 1 MB).
-app.get(/^\/preview\/(.*)$/, requireBasicAuth, function (req, res) {
+app.get(/^\/preview\/(.*)$/, requireBasicAuth, wrap(async function (req, res) {
   const sub = decodeURIComponent(req.params[0] || '');
   const filePath = resolveSafePath(sub);
   if (!filePath) {
@@ -753,7 +1017,7 @@ app.get(/^\/preview\/(.*)$/, requireBasicAuth, function (req, res) {
   }
   let stat;
   try {
-    stat = fs.statSync(filePath);
+    stat = await fsp.stat(filePath);
   } catch (err) {
     res.status(404).json({ error: 'Not found' });
     return;
@@ -785,7 +1049,7 @@ app.get(/^\/preview\/(.*)$/, requireBasicAuth, function (req, res) {
   }
   let content;
   try {
-    content = fs.readFileSync(filePath);
+    content = await fsp.readFile(filePath);
   } catch (err) {
     res.status(500).json({ error: 'Read error: ' + err.message });
     return;
@@ -810,7 +1074,7 @@ app.get(/^\/preview\/(.*)$/, requireBasicAuth, function (req, res) {
     text: text,
     rawUrl: '/raw/' + urlJoin(sub.split('/')),
   });
-});
+}));
 
 // Health check (always public)
 app.get('/healthz', function (req, res) {
@@ -820,6 +1084,17 @@ app.get('/healthz', function (req, res) {
 // 404 handler
 app.use(function (req, res) {
   res.status(404).send('Not found.');
+});
+
+// Final error handler (async route rejections land here).
+// eslint-disable-next-line no-unused-vars
+app.use(function (err, req, res, next) {
+  console.error('[error]', req.method, req.originalUrl, err.message);
+  if (res.headersSent) return;
+  if (err && err.type === 'entity.parse.failed') {
+    return res.status(400).json({ ok: false, error: 'Invalid JSON body.' });
+  }
+  res.status(500).send('Internal server error.');
 });
 
 // ---------------------------------------------------------------------------

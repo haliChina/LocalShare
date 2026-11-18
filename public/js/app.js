@@ -1,7 +1,11 @@
-/* 鍏歌棌瀹?/ Archives 鈥?client-side interactions
+/* 典藏室 / Archives — client-side interactions
    - Search filter (with / shortcut, ESC to clear)
    - View toggle (grid/list) with localStorage persistence
-   - Drag & drop / click upload with XHR progress
+   - Drag & drop / click upload with XHR progress, speed and cancel
+   - Clipboard: paste files or screenshots to upload, paste text to share
+   - Text snippet quick-share (LocalSend style)
+   - File management: delete / rename / new folder
+   - QR code panel for quick mobile access
    - Preview drawer (images, video, audio, text, code, PDF, unsupported fallback)
    - ESC to close drawer
 */
@@ -25,6 +29,13 @@
     return String(s).replace(/[&<>"']/g, function (c) {
       return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c];
     });
+  }
+
+  function timestampName(ext) {
+    var d = new Date();
+    var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+    return d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate())
+      + '_' + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds()) + ext;
   }
 
   // --------------------------------------------------------- search filter
@@ -52,9 +63,11 @@
     if (searchInput) { e.preventDefault(); searchInput.focus(); searchInput.select(); }
   });
 
-  // ESC to close drawer or clear search
+  // ESC to close modal / drawer or clear search
   document.addEventListener('keydown', function (e) {
     if (e.key !== 'Escape') return;
+    var modal = qs(document, '#text-modal');
+    if (modal && !modal.hidden) { closeTextModal(); return; }
     if (drawer && !drawer.hidden) { closeDrawer(); return; }
     if (searchInput && document.activeElement === searchInput && searchInput.value) {
       searchInput.value = '';
@@ -99,6 +112,91 @@
     });
   }
 
+  // ------------------------------------------------------------ QR panel
+  var qrPanel = qs(document, '#qr-panel');
+  var qrToggle = qs(document, '#qr-toggle');
+  if (qrToggle && qrPanel) {
+    qrToggle.addEventListener('click', function (e) {
+      e.stopPropagation();
+      var open = qrPanel.classList.toggle('is-open');
+      if (open) {
+        var img = qs(qrPanel, '#qr-img');
+        if (img && !img.getAttribute('src')) img.setAttribute('src', '/qr.svg');
+      }
+    });
+  }
+
+  // ---------------------------------------------------------- management
+  // Delete / rename / new-folder. All POST JSON + same-origin.
+  function api(path, body) {
+    return fetch(path, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    }).then(function (r) {
+      return r.json().catch(function () { return { ok: false, error: 'HTTP ' + r.status }; })
+        .then(function (j) {
+          if (!r.ok || j.ok === false) throw new Error(j.error || ('HTTP ' + r.status));
+          return j;
+        });
+    });
+  }
+
+  function toast(msg, isError) {
+    var box = qs(document, '#toast');
+    if (!box) { window.alert(msg); return; }
+    box.textContent = msg;
+    box.classList.toggle('is-error', !!isError);
+    box.classList.add('is-visible');
+    clearTimeout(toast._t);
+    toast._t = setTimeout(function () { box.classList.remove('is-visible'); }, 2600);
+  }
+
+  var btnNewFolder = qs(document, '#btn-new-folder');
+  if (btnNewFolder) {
+    btnNewFolder.addEventListener('click', function (e) {
+      e.stopPropagation();
+      var name = window.prompt('新文件夹名称：');
+      if (!name) return;
+      var rel = btnNewFolder.getAttribute('data-parent') || '';
+      api('/mkdir', { parent: rel, name: name })
+        .then(function () { toast('文件夹已创建'); setTimeout(function () { window.location.reload(); }, 400); })
+        .catch(function (err) { toast('创建失败：' + err.message, true); });
+    });
+  }
+
+  document.addEventListener('click', function (e) {
+    var del = e.target.closest('[data-action="delete"]');
+    if (del) {
+      e.preventDefault();
+      e.stopPropagation();
+      var entryDel = del.closest('.entry');
+      if (!entryDel) return;
+      var relDel = entryDel.getAttribute('data-rel') || '';
+      var nameDel = entryDel.getAttribute('data-name') || relDel;
+      if (!window.confirm('确定要删除 "' + nameDel + '" 吗？此操作不可恢复。')) return;
+      api('/delete', { path: relDel })
+        .then(function () { toast('已删除'); setTimeout(function () { window.location.reload(); }, 400); })
+        .catch(function (err) { toast('删除失败：' + err.message, true); });
+      return;
+    }
+    var ren = e.target.closest('[data-action="rename"]');
+    if (ren) {
+      e.preventDefault();
+      e.stopPropagation();
+      var entry = ren.closest('.entry');
+      if (!entry) return;
+      var rel = entry.getAttribute('data-rel') || '';
+      var current = rel.split('/').pop() || '';
+      var name = window.prompt('重命名为：', current);
+      if (!name || name === current) return;
+      api('/rename', { from: rel, name: name })
+        .then(function () { toast('已重命名'); setTimeout(function () { window.location.reload(); }, 400); })
+        .catch(function (err) { toast('重命名失败：' + err.message, true); });
+    }
+  });
+
   // ---------------------------------------------------------------- upload
   var dropzone = qs(document, '#dropzone');
   var fileInputFiles = qs(document, '#file-input-files');
@@ -109,6 +207,8 @@
   var progressBox = qs(document, '#upload-progress');
   var progressFill = qs(document, '.upload-progress-fill');
   var progressText = qs(document, '.upload-progress-text');
+  var btnCancelUpload = qs(document, '#btn-cancel-upload');
+  var currentXhr = null;
 
   function walkEntry(entry, out) {
     if (!entry) return;
@@ -159,36 +259,70 @@
     if (progressBox) {
       progressBox.hidden = false;
       progressFill.style.width = '0%';
-      progressText.textContent = '鍑嗗涓婁紶 ' + count + ' 椤?路 ' + humanSize(totalBytes);
+      progressText.textContent = '准备上传 ' + count + ' 项 · ' + humanSize(totalBytes);
+      if (btnCancelUpload) btnCancelUpload.hidden = false;
     }
     var xhr = new XMLHttpRequest();
+    currentXhr = xhr;
+    var startedAt = 0;
+    var lastLoaded = 0;
+    var lastAt = 0;
     xhr.open('POST', (uploadForm && uploadForm.getAttribute('action')) || '/upload', true);
     xhr.withCredentials = true;
     xhr.upload.addEventListener('progress', function (ev) {
       if (!progressFill || !progressText) return;
+      var now = Date.now();
       if (ev.lengthComputable) {
         var pct = Math.round((ev.loaded / ev.total) * 100);
         progressFill.style.width = pct + '%';
-        progressText.textContent = '涓婁紶涓?' + pct + '% 路 ' + humanSize(ev.loaded) + ' / ' + humanSize(ev.total);
+        var speedText = '';
+        if (startedAt && now - lastAt >= 500) {
+          var speed = (ev.loaded - lastLoaded) / ((now - lastAt) / 1000);
+          if (speed > 0) speedText = ' · ' + humanSize(speed) + '/s';
+          lastLoaded = ev.loaded;
+          lastAt = now;
+        }
+        progressText.textContent = '上传中 ' + pct + '% · ' + humanSize(ev.loaded) + ' / ' + humanSize(ev.total) + speedText;
       } else {
-        progressText.textContent = '涓婁紶涓?' + humanSize(ev.loaded) + ' ...';
+        progressText.textContent = '上传中 ' + humanSize(ev.loaded) + ' ...';
       }
     });
+    xhr.upload.addEventListener('loadstart', function () {
+      startedAt = Date.now();
+      lastAt = startedAt;
+      lastLoaded = 0;
+    });
     xhr.addEventListener('load', function () {
+      currentXhr = null;
+      if (btnCancelUpload) btnCancelUpload.hidden = true;
       if (xhr.status >= 200 && xhr.status < 400) {
-        if (progressText) progressText.textContent = '涓婁紶瀹屾垚 路 姝ｅ湪鍒锋柊...';
+        if (progressText) progressText.textContent = '上传完成 · 正在刷新...';
         setTimeout(function () { window.location.reload(); }, 350);
       } else if (xhr.status === 401) {
         if (progressText) progressText.textContent = '需要登录';
         window.location.reload();
       } else {
-        if (progressText) progressText.textContent = '涓婁紶澶辫触 (' + xhr.status + ')';
+        if (progressText) progressText.textContent = '上传失败 (' + xhr.status + ')';
       }
     });
     xhr.addEventListener('error', function () {
-      if (progressText) progressText.textContent = '缃戠粶閿欒';
+      currentXhr = null;
+      if (btnCancelUpload) btnCancelUpload.hidden = true;
+      if (progressText) progressText.textContent = '网络错误';
+    });
+    xhr.addEventListener('abort', function () {
+      currentXhr = null;
+      if (btnCancelUpload) btnCancelUpload.hidden = true;
+      if (progressText) progressText.textContent = '已取消';
     });
     xhr.send(data);
+  }
+
+  if (btnCancelUpload) {
+    btnCancelUpload.addEventListener('click', function (e) {
+      e.stopPropagation();
+      if (currentXhr) currentXhr.abort();
+    });
   }
 
   if (btnSelectFiles && fileInputFiles) {
@@ -287,6 +421,99 @@
     });
   }
 
+  // -------------------------------------------------------- clipboard share
+  // Paste screenshots (image) or files to upload directly; paste plain text
+  // to open the quick text-share modal (LocalSend style text transfer).
+  document.addEventListener('paste', function (e) {
+    var t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    var items = (e.clipboardData || {}).items;
+    if (!items) return;
+    var fileBucket = [];
+    var hasImage = false;
+    for (var i = 0; i < items.length; i++) {
+      var item = items[i];
+      if (item.kind === 'file') {
+        var f = item.getAsFile();
+        if (f) {
+          if (f.type && f.type.indexOf('image/') === 0) hasImage = true;
+          fileBucket.push(f);
+        }
+      }
+    }
+    if (fileBucket.length > 0) {
+      e.preventDefault();
+      // Screenshots pasted from the clipboard have generic names; give them
+      // something meaningful instead.
+      var named = fileBucket.map(function (f) {
+        if (hasImage && (!f.name || /^image\.(png|jpeg)$/.test(f.name))) {
+          var ext = (f.type === 'image/jpeg') ? '.jpg' : (f.type && f.type.split('/')[1] ? '.' + f.type.split('/')[1] : '.png');
+          try { return new File([f], timestampName(ext), { type: f.type }); } catch (err) { return f; }
+        }
+        return f;
+      });
+      uploadFiles(named);
+      return;
+    }
+    var text = (e.clipboardData || {}).getData('text');
+    if (text && text.trim()) {
+      e.preventDefault();
+      openTextModal(text);
+    }
+  });
+
+  // ------------------------------------------------------- text quick share
+  var textModal = qs(document, '#text-modal');
+  var textArea = qs(document, '#text-area');
+  var textName = qs(document, '#text-name');
+  var btnTextSave = qs(document, '#btn-text-save');
+  var btnTextClose = qs(document, '#btn-text-close');
+  var btnTextShare = qs(document, '#btn-text-share');
+
+  function openTextModal(prefill) {
+    if (!textModal) return;
+    textModal.hidden = false;
+    if (textArea) {
+      textArea.value = prefill || '';
+      if (textName) textName.value = timestampName('.txt');
+      setTimeout(function () { textArea.focus(); }, 50);
+    }
+  }
+
+  function closeTextModal() {
+    if (textModal) textModal.hidden = true;
+  }
+
+  if (btnTextShare) {
+    btnTextShare.addEventListener('click', function (e) {
+      e.stopPropagation();
+      openTextModal('');
+    });
+  }
+  if (btnTextClose) btnTextClose.addEventListener('click', closeTextModal);
+  qsa(textModal, '[data-action="close-modal"]').forEach(function (el) {
+    el.addEventListener('click', closeTextModal);
+  });
+
+  if (btnTextSave) {
+    btnTextSave.addEventListener('click', function () {
+      var content = textArea ? textArea.value : '';
+      if (!content.trim()) { toast('内容为空', true); return; }
+      var name = (textName && textName.value.trim()) || timestampName('.txt');
+      if (!/\.[a-z0-9]{1,8}$/i.test(name)) name += '.txt';
+      var blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+      var file;
+      try {
+        file = new File([blob], name, { type: 'text/plain;charset=utf-8' });
+      } catch (err) {
+        file = blob;
+        file.name = name;
+      }
+      closeTextModal();
+      uploadFiles([file]);
+    });
+  }
+
   // ------------------------------------------------------------- preview
   var drawer = qs(document, '#drawer');
   var drawerTitle = qs(document, '#drawer-title');
@@ -306,11 +533,11 @@
     if (num != null) num = 'N' + String(parseInt(num, 10) + 1).padStart(3, '0');
 
     drawerTitle.textContent = name;
-    drawerMeta.textContent = kind + ' 路 ' + humanSize(size) + ' 路 瀹炴椂棰勮';
+    drawerMeta.textContent = kind + ' · ' + humanSize(size) + ' · 实时预览';
     if (drawerNum) drawerNum.textContent = num || '--';
     // Use encodeURI (NOT encodeURIComponent) to preserve / separators in the path
-    if (drawerDownload) drawerDownload.setAttribute('href', '/raw/' + encodeURI(rel));
-    drawerBody.innerHTML = '<div class="drawer-loading"><span class="drawer-spinner"></span><span>姝ｅ湪鎵撳紑鈥?/span></div>';
+    if (drawerDownload) drawerDownload.setAttribute('href', '/raw/' + encodeURI(rel) + '?dl=1');
+    drawerBody.innerHTML = '<div class="drawer-loading"><span class="drawer-spinner"></span><span>正在打开…</span></div>';
 
     drawer.hidden = false;
     document.body.style.overflow = 'hidden';
@@ -329,7 +556,7 @@
         if (ct.indexOf('application/json') === 0) {
           return r.json().then(function (j) { return { kind: 'json', data: j }; });
         }
-        // Raw stream 鈥?use the preview URL as the source
+        // Raw stream — use the preview URL as the source
         return { kind: 'raw', ct: ct, url: previewUrl };
       })
       .then(function (res) {
@@ -339,9 +566,9 @@
       .catch(function (err) {
         drawerBody.innerHTML =
           '<div class="preview-unsupported">' +
-          '<h3>鏃犳硶鎵撳紑</h3>' +
-          '<p>' + escapeHtml(err.message || '棰勮澶辫触') + '</p>' +
-          '<a class="btn btn-primary" href="/raw/' + encodeURI(rel) + '" download>涓嬭浇鏂囦欢</a>' +
+          '<h3>无法打开</h3>' +
+          '<p>' + escapeHtml(err.message || '预览失败') + '</p>' +
+          '<a class="btn btn-primary" href="/raw/' + encodeURI(rel) + '?dl=1" download>下载文件</a>' +
           '</div>';
       });
   }
@@ -355,9 +582,9 @@
       if (data.tooLarge) {
         drawerBody.innerHTML =
           '<div class="preview-unsupported">' +
-          '<h3>鏂囦欢杩囧ぇ</h3>' +
-          '<p>瓒呰繃 1 MB 鐨勬枃鏈笉浼氬湪棰勮绐椾腑鏄剧ず锛岃鐩存帴涓嬭浇銆?/p>' +
-          '<a class="btn btn-primary" href="/raw/' + encodeURI(data.relPath || '') + '" download>涓嬭浇</a>' +
+          '<h3>文件过大</h3>' +
+          '<p>超过 1 MB 的文本不会在预览窗中显示，请直接下载。</p>' +
+          '<a class="btn btn-primary" href="/raw/' + encodeURI(data.relPath || '') + '?dl=1" download>下载</a>' +
           '</div>';
         return;
       }
@@ -374,31 +601,31 @@
         return;
       }
 
-      // Unsupported 鈥?use rawUrl from server (already properly encoded per-segment)
+      // Unsupported — use rawUrl from server (already properly encoded per-segment)
       if (data.kind === 'unsupported') {
         drawerBody.innerHTML =
           '<div class="preview-unsupported">' +
           '<svg viewBox="0 0 96 96" width="56" height="56" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 32v44a4 4 0 0 0 4 4h56a4 4 0 0 0 4-4V40a4 4 0 0 0-4-4H46l-6-8H20a4 4 0 0 0-4 4z"/><line x1="28" y1="56" x2="68" y2="56"/><line x1="28" y1="64" x2="58" y2="64"/></svg>' +
-          '<h3>姝ょ被鍨嬫棤娉曢瑙?/h3>' +
-          '<p>鏂囦欢宸插氨缁紝鍙互鐩存帴涓嬭浇銆?/p>' +
-          '<a class="btn btn-primary" href="' + escapeHtml(data.rawUrl) + '" download>涓嬭浇鏂囦欢</a>' +
+          '<h3>此类型无法预览</h3>' +
+          '<p>文件已就绪，可以直接下载。</p>' +
+          '<a class="btn btn-primary" href="' + escapeHtml(data.rawUrl) + '?dl=1" download>下载文件</a>' +
           '</div>';
         return;
       }
 
-      // Image 鈥?use rawUrl from server (already properly encoded per-segment)
+      // Image — use rawUrl from server (already properly encoded per-segment)
       if (data.kind === 'image') {
         drawerBody.innerHTML = '<div class="preview-image"><img alt="" src="' + escapeHtml(data.rawUrl) + '"></div>';
         return;
       }
 
-      // Video 鈥?use rawUrl from server
+      // Video — use rawUrl from server
       if (data.kind === 'video') {
         drawerBody.innerHTML = '<div class="preview-video"><video controls src="' + escapeHtml(data.rawUrl) + '"></video></div>';
         return;
       }
 
-      // Audio 鈥?use rawUrl from server
+      // Audio — use rawUrl from server
       if (data.kind === 'audio') {
         drawerBody.innerHTML =
           '<div class="preview-audio">' +
@@ -410,7 +637,7 @@
         return;
       }
 
-      // PDF 鈥?use iframe with rawUrl from server
+      // PDF — use iframe with rawUrl from server
       if (data.kind === 'pdf') {
         drawerBody.innerHTML =
           '<div class="preview-image" style="width:100%;height:100%;">' +
@@ -443,12 +670,12 @@
           '<iframe src="' + escapeHtml(url) + '" style="width:100%;height:100%;min-height:calc(100vh - 240px);border:0;background:#fff;border-radius:6px;box-shadow:0 8px 32px rgba(31,28,23,0.18);" title="' + escapeHtml(name) + '"></iframe>' +
           '</div>';
       } else {
-        // Generic stream 鈥?fallback with download link
+        // Generic stream — fallback with download link
         drawerBody.innerHTML =
           '<div class="preview-unsupported">' +
-          '<h3>鏈煡鏍煎紡</h3>' +
-          '<p>涓嶈兘鐩存帴棰勮锛屽彲浠ヤ笅杞藉埌鏈湴鏌ョ湅銆?/p>' +
-          '<a class="btn btn-primary" href="' + escapeHtml(url) + '" download>涓嬭浇鏂囦欢</a>' +
+          '<h3>未知格式</h3>' +
+          '<p>不能直接预览，可以下载到本地查看。</p>' +
+          '<a class="btn btn-primary" href="' + escapeHtml(url) + '?dl=1" download>下载文件</a>' +
           '</div>';
       }
     }
