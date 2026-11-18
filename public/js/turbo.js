@@ -212,6 +212,9 @@
     ensurePanel();
     cancel();
     S = { rel: rel, name: name, size: sizeBytes || 0, parts: [], abort: new AbortController(), blobs: [], done: false };
+    // Audit P2: everything below belongs to THIS session. Async callbacks
+    // must not touch a newer session's state after a cancel + restart.
+    var sess = S;
     showPanel();
     pName.textContent = name;
     pMeta.textContent = '…';
@@ -224,26 +227,26 @@
     setStage('① HEAD 探测元数据…', 'run');
 
     // 1) 元数据 + 服务端哈希 并行获取
-    var headP = fetch('/raw/' + encodeURI(rel), { method: 'HEAD', credentials: 'same-origin', signal: S.abort.signal })
+    var headP = fetch('/raw/' + encodeURI(rel), { method: 'HEAD', credentials: 'same-origin', signal: sess.abort.signal })
       .then(function (r) {
         if (!r.ok) throw new Error('HEAD 失败: HTTP ' + r.status);
         var len = parseInt(r.headers.get('content-length') || '0', 10);
-        if (!S.size && len) S.size = len;
+        if (!sess.size && len) sess.size = len;
         var ar = r.headers.get('accept-ranges');
         if (!ar || ar.indexOf('bytes') === -1) throw new Error('服务端不支持 Range，请使用普通下载');
       });
-    var hashP = fetch('/sha256/' + encodeURI(rel), { credentials: 'same-origin', signal: S.abort.signal })
+    var hashP = fetch('/sha256/' + encodeURI(rel), { credentials: 'same-origin', signal: sess.abort.signal })
       .then(function (r) { if (!r.ok) throw new Error('哈希接口失败'); return r.json(); })
       .then(function (j) {
-        S.size = j.size || S.size;
+        sess.size = j.size || sess.size;
         return j.sha256;
       })
       .catch(function () { return null; }); // 哈希拿不到时仍可下载，只是跳过核验
 
     Promise.all([headP, hashP]).then(function (rs) {
-      if (!S || S.aborted) return;
-      S.expectedHash = rs[1];
-      var size = S.size;
+      if (sess.aborted || S !== sess) return;
+      sess.expectedHash = rs[1];
+      var size = sess.size;
       if (size == null || size < 0) throw new Error('无法获取文件大小');
 
       // Audit P2: memory guard — beyond the cap the client cannot safely hold
@@ -251,46 +254,52 @@
       if (size > TURBO_MAX_BYTES) {
         setStage('文件超过 ' + fmtBytes(TURBO_MAX_BYTES) + '，已改用浏览器普通下载', '');
         pMeta.textContent = fmtBytes(size) + ' · 超级下载上限 ' + fmtBytes(TURBO_MAX_BYTES);
-        setTimeout(function () { fallbackPlain(rel); }, 400);
+        // Audit P2: keep the deferred fallback on the session so cancel/close
+        // during the 400 ms window prevents the surprise download.
+        sess.fallbackTimer = setTimeout(function () {
+          if (S === sess && !sess.aborted) fallbackPlain(rel);
+        }, 400);
         return;
       }
-      pMeta.textContent = fmtBytes(size) + ' · SHA-256 ' + (S.expectedHash ? '已就绪' : '不可用（跳过核验）');
+      pMeta.textContent = fmtBytes(size) + ' · SHA-256 ' + (sess.expectedHash ? '已就绪' : '不可用（跳过核验）');
 
       var t0 = performance.now();
 
       function finishWith(hex) {
-        if (!S || S.aborted) return;
+        if (sess.aborted || S !== sess) return;
         var line;
         // 完成态：以总耗时 + 平均速度代替瞬时速度（避免停留在 0.0）
         var elapsedSec = Math.max(0.05, (performance.now() - t0) / 1000);
         pSpeed.textContent = fmtSpeed((size / 1048576) / elapsedSec) + ' avg · ' + elapsedSec.toFixed(1) + 's';
-        if (!S.expectedHash) {
+        if (!sess.expectedHash) {
           line = '本地哈希: <code>' + hex + '</code><br>服务端哈希不可用，已跳过核验';
           setStage('完成（未核验）', '');
-        } else if (hex === S.expectedHash) {
-          line = '本地拼装: <code>' + hex + '</code><br>服务端: <code>' + S.expectedHash + '</code><b class="turbo-ok">✓ 完整性核验通过 — 逐位一致</b>';
+        } else if (hex === sess.expectedHash) {
+          line = '本地拼装: <code>' + hex + '</code><br>服务端: <code>' + sess.expectedHash + '</code><b class="turbo-ok">✓ 完整性核验通过 — 逐位一致</b>';
           setStage('✓ 下载完成 · 核验通过', 'ok');
         } else {
-          line = '本地拼装: <code>' + hex + '</code><br>服务端: <code>' + S.expectedHash + '</code><b class="turbo-bad">✗ 校验不一致，请重试</b>';
+          line = '本地拼装: <code>' + hex + '</code><br>服务端: <code>' + sess.expectedHash + '</code><b class="turbo-bad">✗ 校验不一致，请重试</b>';
           setStage('✗ 核验失败', 'bad');
         }
         pVerify.innerHTML = line;
         pVerify.hidden = false;
         qs('#turbo-actions').hidden = false;
         qs('#turbo-cancel-row').hidden = true;
-        qs('#turbo-save').disabled = (S.expectedHash && hex !== S.expectedHash);
-        S.blobs = [new Blob([S.assembled])];
-        S.assembled = null; // Blob 已持有数据，释放直拷引用
-        S.done = true;
-        // 核验通过后自动保存
-        if (S.expectedHash && hex === S.expectedHash) setTimeout(save, 350);
+        qs('#turbo-save').disabled = (sess.expectedHash && hex !== sess.expectedHash);
+        sess.blobs = [new Blob([sess.assembled])];
+        sess.assembled = null; // Blob 已持有数据，释放直拷引用
+        sess.done = true;
+        // 核验通过后自动保存（仅当此会话仍是当前会话）
+        if (sess.expectedHash && hex === sess.expectedHash) {
+          setTimeout(function () { if (S === sess && !sess.aborted) save(); }, 350);
+        }
       }
 
       // Audit P2: zero-byte files are valid — skip chunking entirely.
       if (size === 0) {
-        S.assembled = new Uint8Array(0);
+        sess.assembled = new Uint8Array(0);
         setStage('④ SHA-256 完整性核验（空文件）…', 'run');
-        hashBuffer(S.assembled.buffer).then(finishWith);
+        hashBuffer(sess.assembled.buffer).then(finishWith);
         return;
       }
 
@@ -303,7 +312,7 @@
         if (st >= size) break;
         ranges.push({ start: st, end: Math.min(st + per, size) - 1 });
       }
-      S.ranges = ranges;
+      sess.ranges = ranges;
       renderChunks(ranges);
       setStage('② ' + ranges.length + ' 路并发分块下载中…', 'run');
 
@@ -313,7 +322,7 @@
       var doneCnt = 0;
 
       function uiTick() {
-        if (!S) return;
+        if (sess.aborted || S !== sess) return;
         // Audit P2: totalLoaded was never updated before — derive it live.
         var totalLoaded = 0;
         for (var i = 0; i < loaded.length; i++) totalLoaded += loaded[i];
@@ -324,14 +333,14 @@
         if (secs > 0.15) pSpeed.textContent = fmtSpeed((totalLoaded / 1048576) / secs);
         renderChunks(ranges, states);
       }
-      // Audit P2: keep the timer on S so cancel/error paths clear it too.
-      S.uiTimer = setInterval(uiTick, 120);
+      // Audit P2: keep the timer on the session so cancel/error paths clear it too.
+      sess.uiTimer = setInterval(uiTick, 120);
 
       function fetchChunk(i) {
         states[i] = 'run';
         return fetch('/raw/' + encodeURI(rel), {
           credentials: 'same-origin',
-          signal: S.abort.signal,
+          signal: sess.abort.signal,
           headers: { 'Range': 'bytes=' + ranges[i].start + '-' + ranges[i].end }
         }).then(function (r) {
           if (r.status !== 206) throw new Error('分块 #' + (i + 1) + ' 未返回 206（HTTP ' + r.status + '）');
@@ -362,7 +371,7 @@
           }
           return pump();
         }).then(function (u) {
-          S.parts[i] = u;
+          sess.parts[i] = u;
           states[i] = 'done';
           doneCnt++;
           uiTick();
@@ -371,29 +380,31 @@
 
       var jobs = ranges.map(function (_, i) { return fetchChunk(i); });
       return Promise.all(jobs).then(function () {
-        clearInterval(S ? S.uiTimer : undefined);
-        if (!S || S.aborted) return;
+        clearInterval(sess.uiTimer);
+        if (sess.aborted || S !== sess) return;
         // 4) 本地拼装
         pBar.style.width = '100%'; pPct.textContent = '100%';
         setStage('③ 本地拼装 ' + fmtBytes(size) + ' …', 'run');
         return new Promise(function (resolve) { setTimeout(resolve, 30); }).then(function () {
           var asm = new Uint8Array(size);
           var off = 0;
-          for (var i = 0; i < S.parts.length; i++) {
-            if (!S.parts[i]) throw new Error('分块缺失 #' + (i + 1));
-            asm.set(S.parts[i], off);
-            off += S.parts[i].length;
+          for (var i = 0; i < sess.parts.length; i++) {
+            if (!sess.parts[i]) throw new Error('分块缺失 #' + (i + 1));
+            asm.set(sess.parts[i], off);
+            off += sess.parts[i].length;
           }
           if (off !== size) throw new Error('拼装大小不符: ' + off + ' ≠ ' + size);
-          S.assembled = asm;
-          S.parts = null; // Audit P2: release chunk buffers right after assembly
+          sess.assembled = asm;
+          sess.parts = null; // Audit P2: release chunk buffers right after assembly
           setStage('④ SHA-256 完整性核验…', 'run');
           return hashBuffer(asm.buffer).then(finishWith);
         });
       });
     }).catch(function (err) {
-      if (S && S.uiTimer) clearInterval(S.uiTimer);
-      if (!S || S.aborted) return;
+      // Audit P2: clear THIS session's timer only — the global S may already
+      // point at a newer download after a cancel + restart.
+      clearInterval(sess.uiTimer);
+      if (sess.aborted || S !== sess) return;
       if (String(err).indexOf('AbortError') === -1) {
         setStage('✗ ' + (err && err.message ? err.message : err), 'bad');
       }
@@ -404,6 +415,7 @@
     if (S) {
       S.aborted = true;
       if (S.uiTimer) clearInterval(S.uiTimer);
+      if (S.fallbackTimer) clearTimeout(S.fallbackTimer);
       try { S.abort.abort(); } catch (e) {}
       S = null;
     }

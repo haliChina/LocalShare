@@ -828,6 +828,18 @@ app.post('/mkdir', requireBasicAuth, sameOriginGuard, wrap(async function (req, 
   res.json({ ok: true, path: parentRel ? parentRel + '/' + name : name });
 }));
 
+// Audit P2: the access-then-rename pair is not atomic — two concurrent
+// renames to the same free name could both pass the check and the second
+// rename would silently replace the first. We serialize the check+rename
+// critical section inside this process (single-instance server), which
+// makes the pair atomic with respect to each other.
+let renameChain = Promise.resolve();
+function serializedRename(task) {
+  const run = renameChain.then(task, task);
+  renameChain = run.then(function () {}, function () {});
+  return run;
+}
+
 app.post('/rename', requireBasicAuth, sameOriginGuard, wrap(async function (req, res) {
   const body = req.body || {};
   const fromRel = String(body.from || '');
@@ -847,17 +859,23 @@ app.post('/rename', requireBasicAuth, sameOriginGuard, wrap(async function (req,
   } catch (err) {
     return res.status(404).json({ ok: false, error: 'Not found.' });
   }
-  // Audit P1: POSIX rename() silently replaces an existing destination.
-  // Refuse overwrites so a rename can never clobber another entry.
   try {
-    await fsp.access(to);
-    return res.status(409).json({ ok: false, error: 'Target name already exists.' });
+    await serializedRename(async function () {
+      // Audit P1: POSIX rename() silently replaces an existing destination.
+      // Refuse overwrites so a rename can never clobber another entry.
+      try {
+        await fsp.access(to);
+        throw Object.assign(new Error('Target name already exists.'), { statusCode: 409 });
+      } catch (err) {
+        if (err && err.statusCode === 409) throw err;
+        /* destination absent — safe to rename */
+      }
+      await fsp.rename(from, to);
+    });
   } catch (err) {
-    /* destination absent — safe to rename */
-  }
-  try {
-    await fsp.rename(from, to);
-  } catch (err) {
+    if (err && err.statusCode === 409) {
+      return res.status(409).json({ ok: false, error: err.message });
+    }
     if (err.code === 'EEXIST' || err.code === 'ENOTEMPTY') {
       return res.status(409).json({ ok: false, error: 'Target name already exists.' });
     }
@@ -872,14 +890,18 @@ app.post('/rename', requireBasicAuth, sameOriginGuard, wrap(async function (req,
 app.get('/qr.svg', requireBasicAuth, wrap(async function (req, res) {
   // Audit note: the QR content is derived from the Host header, which a
   // client can spoof. Only trust hosts that resolve to this machine
-  // (loopback or one of our LAN IPv4 addresses); anything else falls back
-  // to the primary local address so the code always points back here.
-  let host = getPrimaryIPv4() + ':' + PORT;
+  // (loopback or one of our LAN IPv4 addresses). The trusted hostname is
+  // then re-combined with OUR port — the raw authority is never reused,
+  // so userinfo tricks like "127.0.0.1:3000@evil.example" cannot leak in.
   const rawHost = String(req.headers.host || '');
   const hostname = rawHost.split(':')[0].trim().toLowerCase();
   const trusted = hostname === 'localhost' || hostname === '127.0.0.1' ||
     hostname === '[::1]' || getLocalIPv4Addresses().indexOf(hostname) !== -1;
-  if (rawHost && trusted) host = rawHost;
+  const trustedName = trusted ? hostname : getPrimaryIPv4();
+  // Wrap IPv6 literals in brackets before appending the port.
+  const host = (trustedName.indexOf(':') !== -1 && trustedName.charAt(0) !== '[')
+    ? '[' + trustedName + ']:' + PORT
+    : trustedName + ':' + PORT;
   const text = req.protocol + '://' + host + '/';
   try {
     const svg = await QRCode.toString(text, { type: 'svg', margin: 1, width: 240 });
