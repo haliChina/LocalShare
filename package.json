@@ -8,8 +8,7 @@
     "postinstall": "node scripts/copy-assets.js",
     "start": "node server.js",
     "build": "pkg . --targets node18-win-x64 --output dist/fileshare.exe",
-    "build:win32": "pkg . --targets node18-win-x86 --output dist/fileshare-x86.exe",
-    "build:all": "pkg . --targets node18-win-x64,node18-win-x86 --output dist/fileshare"
+    "build:all": "npm run build"
   },
   "dependencies": {
     "archiver": "5.3.2",

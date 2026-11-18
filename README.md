@@ -41,7 +41,7 @@ LocalShare 是一个 Node.js 内网文件服务，也可以打包成单一 Windo
 - 可选 HTTP Basic Auth（**时序安全比对** + **登录失败限速**）
 - 管理类 POST 接口校验同源 Origin，防御跨站请求
 - 自定义端口和服务标题
-- `pkg` 打包 Windows x64/x86 单文件
+- `pkg` 打包 Windows x64 单文件
 
 ## 快速开始
 
@@ -82,8 +82,7 @@ node server.js --help
 ```bash
 npm install
 npm run build         # dist/fileshare.exe，Windows x64
-npm run build:win32   # dist/fileshare-x86.exe
-npm run build:all     # 同时构建 x64 / x86
+npm run build:all     # 同上，构建 Windows x64
 ```
 
 运行：
