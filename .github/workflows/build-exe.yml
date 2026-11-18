@@ -1,0 +1,70 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']          # 推送 v1.0.1 这类 tag 时会构建并发布 Release
+  workflow_dispatch:      # 允许在 Actions 页面手动触发
+
+permissions:
+  contents: write         # 发布 Release 需要
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18   # 与 pkg 的 node18 目标对应，避免兼容性问题
+
+      # 缓存 pkg 下载的 Windows Node 运行时（README 里提到的"首次交叉构建需下载运行时"）
+      - name: Cache pkg base binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.pkg-cache
+          key: pkg-${{ runner.os }}-node18-${{ hashFiles('package-lock.json') }}
+
+      - name: Install dependencies
+        run: npm ci   # 会自动执行 postinstall (copy-assets.js)
+
+      - name: Build x64
+        run: npm run build
+
+      - name: Generate checksums
+        run: |
+          $files = Get-ChildItem -Path dist -Filter *.exe
+          $lines = foreach ($file in $files) {
+            $hash = (Get-FileHash -Path $file.FullName -Algorithm SHA256).Hash.ToLower()
+            "$hash  $($file.Name)"
+          }
+          $lines | Set-Content -Encoding ASCII dist/SHA256SUMS.txt
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fileshare-windows
+          path: |
+            dist/*.exe
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      # 只有推送 tag 时才创建 GitHub Release
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.exe
+            dist/SHA256SUMS.txt
+          generate_release_notes: true
