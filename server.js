@@ -445,6 +445,20 @@ function handleUpload(req, res, next) {
   const result = { files: [], errors: [] };
   let aborted = false;
 
+  // Audit P2: track in-flight writes so an aborted request (client cancel,
+  // network drop) does not leave partial files behind. Entries are removed
+  // once a write completes successfully; anything left when the request
+  // closes prematurely is unlinked.
+  const pendingWrites = new Set();
+  req.on('close', function () {
+    if (aborted || req.uploadResult) return; // normal completion — keep files
+    pendingWrites.forEach(function (w) {
+      try { w.ws.destroy(); } catch (e) { /* ignore */ }
+      fsp.unlink(w.absTarget).catch(function () { /* already gone */ });
+    });
+    pendingWrites.clear();
+  });
+
   function abort(status, msg) {
     if (aborted) return;
     aborted = true;
@@ -519,15 +533,20 @@ function handleUpload(req, res, next) {
     }
     const absTarget = path.join(targetDir, target);
     const writeStream = fs.createWriteStream(absTarget);
+    const pending = { absTarget: absTarget, ws: writeStream };
+    pendingWrites.add(pending);
     let truncated = false;
     fileStream.on('limit', function () {
       truncated = true;
     });
     fileStream.pipe(writeStream);
     writeStream.on('error', function (err) {
+      pendingWrites.delete(pending);
+      fsp.unlink(absTarget).catch(function () { /* ignore */ });
       result.errors.push({ field: fieldname, name: filename, message: 'Write error: ' + err.message });
     });
     writeStream.on('finish', function () {
+      pendingWrites.delete(pending);
       if (truncated) {
         try { fs.unlinkSync(absTarget); } catch (e) { /* ignore */ }
         result.errors.push({ field: fieldname, name: filename, message: 'File exceeds size limit (' + formatSize(MAX_FILE_SIZE) + ')' });
@@ -774,6 +793,11 @@ app.post('/delete', requireBasicAuth, sameOriginGuard, wrap(async function (req,
   if (!target) {
     return res.status(400).json({ ok: false, error: 'Invalid path.' });
   }
+  // Audit P1: slash-only inputs like "///" normalize back to the shared root;
+  // a recursive rm there would wipe the entire share. Refuse it explicitly.
+  if (path.resolve(target) === path.resolve(SHARED_DIR)) {
+    return res.status(400).json({ ok: false, error: 'Refusing to delete the shared root.' });
+  }
   try {
     await fsp.rm(target, { recursive: true, force: false });
   } catch (err) {
@@ -804,6 +828,18 @@ app.post('/mkdir', requireBasicAuth, sameOriginGuard, wrap(async function (req, 
   res.json({ ok: true, path: parentRel ? parentRel + '/' + name : name });
 }));
 
+// Audit P2: the access-then-rename pair is not atomic — two concurrent
+// renames to the same free name could both pass the check and the second
+// rename would silently replace the first. We serialize the check+rename
+// critical section inside this process (single-instance server), which
+// makes the pair atomic with respect to each other.
+let renameChain = Promise.resolve();
+function serializedRename(task) {
+  const run = renameChain.then(task, task);
+  renameChain = run.then(function () {}, function () {});
+  return run;
+}
+
 app.post('/rename', requireBasicAuth, sameOriginGuard, wrap(async function (req, res) {
   const body = req.body || {};
   const fromRel = String(body.from || '');
@@ -824,8 +860,22 @@ app.post('/rename', requireBasicAuth, sameOriginGuard, wrap(async function (req,
     return res.status(404).json({ ok: false, error: 'Not found.' });
   }
   try {
-    await fsp.rename(from, to);
+    await serializedRename(async function () {
+      // Audit P1: POSIX rename() silently replaces an existing destination.
+      // Refuse overwrites so a rename can never clobber another entry.
+      try {
+        await fsp.access(to);
+        throw Object.assign(new Error('Target name already exists.'), { statusCode: 409 });
+      } catch (err) {
+        if (err && err.statusCode === 409) throw err;
+        /* destination absent — safe to rename */
+      }
+      await fsp.rename(from, to);
+    });
   } catch (err) {
+    if (err && err.statusCode === 409) {
+      return res.status(409).json({ ok: false, error: err.message });
+    }
     if (err.code === 'EEXIST' || err.code === 'ENOTEMPTY') {
       return res.status(409).json({ ok: false, error: 'Target name already exists.' });
     }
@@ -838,7 +888,20 @@ app.post('/rename', requireBasicAuth, sameOriginGuard, wrap(async function (req,
 // QR code (SVG) — scan to open this share on a phone, like LocalSend/CHFS.
 // ---------------------------------------------------------------------------
 app.get('/qr.svg', requireBasicAuth, wrap(async function (req, res) {
-  const host = req.headers.host || (getPrimaryIPv4() + ':' + PORT);
+  // Audit note: the QR content is derived from the Host header, which a
+  // client can spoof. Only trust hosts that resolve to this machine
+  // (loopback or one of our LAN IPv4 addresses). The trusted hostname is
+  // then re-combined with OUR port — the raw authority is never reused,
+  // so userinfo tricks like "127.0.0.1:3000@evil.example" cannot leak in.
+  const rawHost = String(req.headers.host || '');
+  const hostname = rawHost.split(':')[0].trim().toLowerCase();
+  const trusted = hostname === 'localhost' || hostname === '127.0.0.1' ||
+    hostname === '[::1]' || getLocalIPv4Addresses().indexOf(hostname) !== -1;
+  const trustedName = trusted ? hostname : getPrimaryIPv4();
+  // Wrap IPv6 literals in brackets before appending the port.
+  const host = (trustedName.indexOf(':') !== -1 && trustedName.charAt(0) !== '[')
+    ? '[' + trustedName + ']:' + PORT
+    : trustedName + ':' + PORT;
   const text = req.protocol + '://' + host + '/';
   try {
     const svg = await QRCode.toString(text, { type: 'svg', margin: 1, width: 240 });

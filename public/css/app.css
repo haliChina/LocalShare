@@ -138,29 +138,24 @@ button { font-family: inherit; }
   flex-shrink: 0;
 }
 
-/* Vercel 三角徽标（隐藏原印章 SVG，用裁切三角重绘） */
+/* 品牌徽标：托盘 + 上箭头（共享/上传意象，单色线条） */
 .brand-seal {
-  position: relative;
   width: 26px;
   height: 26px;
+  border-radius: var(--radius-s);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  color: var(--fg);
+  transition: color var(--dur) var(--ease);
 }
 
-.brand-seal svg { display: none; }
+.brand:hover .brand-seal { color: var(--accent); }
 
-.brand-seal::before {
-  content: '';
-  width: 20px;
-  height: 18px;
-  background: linear-gradient(135deg, var(--fg) 55%, var(--accent));
-  clip-path: polygon(50% 0, 100% 100%, 0 100%);
-  transition: transform var(--dur) var(--ease-spring);
-}
+.brand-seal svg { transition: transform var(--dur) var(--ease-spring); }
 
-.brand:hover .brand-seal::before { transform: translateY(-1px) scale(1.06); }
+.brand:hover .brand-seal svg { transform: translateY(-1px) scale(1.06); }
 
 .brand-text { display: flex; flex-direction: column; line-height: 1.25; }
 
@@ -175,7 +170,7 @@ button { font-family: inherit; }
   font-size: 9.5px;
   color: var(--fg-3);
   text-transform: uppercase;
-  letter-spacing: .08em;
+  letter-spacing: .05em;
 }
 
 /* 地址胶囊 */
@@ -331,6 +326,10 @@ button { font-family: inherit; }
   grid-template-columns: repeat(3, 1fr);
   gap: 8px;
 }
+
+/* <dl> 默认 margin 会把 <dd> 数字向右推 40px，破坏与标签的对齐 */
+.stats dt,
+.stats dd { margin: 0; }
 
 .stat {
   border: 1px solid var(--border);
@@ -1300,20 +1299,19 @@ button { font-family: inherit; }
   background: var(--bg-sub);
 }
 
+/* 单色闪电图标（与主界面工具栏图标语言一致，不用渐变底徽章） */
 .turbo-bolt {
-  width: 26px;
-  height: 26px;
+  width: 24px;
+  height: 24px;
   border-radius: var(--radius-xs);
-  background: linear-gradient(135deg, var(--accent), var(--violet));
-  color: #fff;
+  color: var(--accent);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 13px;
   flex-shrink: 0;
 }
 
-.turbo-title { font-size: 12.5px; font-weight: 600; flex: 1; }
+.turbo-title { font-size: 13px; font-weight: 600; flex: 1; }
 
 .turbo-close {
   border: none;
@@ -1334,7 +1332,7 @@ button { font-family: inherit; }
 .turbo-body { padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
 
 .turbo-name {
-  font-size: 13px;
+  font-size: 13.5px;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1372,7 +1370,7 @@ button { font-family: inherit; }
   gap: 10px;
 }
 
-.turbo-pct { font-size: 22px; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.turbo-pct { font-size: 20px; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
 
 .turbo-speed { font-family: var(--mono); font-size: 11.5px; color: var(--fg-2); font-variant-numeric: tabular-nums; }
 
